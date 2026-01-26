@@ -1,2 +1,16 @@
-__pycache__
-.venv
+# PyInstaller
+/build/
+/dist/
+*.spec
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyz
+*.log
+
+# OS/IDE
+.vscode/
+.DS_Store
