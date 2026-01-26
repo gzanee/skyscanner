@@ -230,13 +230,15 @@ class SkyScanner:
             BannedWithCaptcha: If API responds with a CAPTCHA ban (403).
             GenericError: For non-200 status codes.
         """
+        params = {"query": query}
+        if depart_date:
+            params["outboundDate"] = depart_date.strftime("%Y-%m-%d")
+        if return_date:
+            params["inboundDate"] = return_date.strftime("%Y-%m-%d")
+
         req = self.session.get(
             config.SEARCH_ORIGIN_ENDPOINT,
-            params={
-                "query": query,
-                "inboundDate": depart_date.strftime("%Y-%m-%d") if depart_date else "",
-                "outboundDate": return_date.strftime("%Y-%m-%d") if return_date else "",
-            },
+            params=params
         )
         if req.status_code == 403:
             raise BannedWithCaptcha(
@@ -610,17 +612,17 @@ class SkyScanner:
         res["dates"] = (
             {"@type": "date", "year": date.year, "month": date.month, "day": date.day}
             if isinstance(date, datetime.datetime)
-            else {"@type": date}
+            else {"@type": date.value}
         )
         res["legOrigin"] = (
             {"@type": "entity", "entityId": origin.entity_id}
             if isinstance(origin, Airport)
-            else {"@type": origin}
+            else {"@type": origin.value}
         )
         res["legDestination"] = (
             {"@type": "entity", "entityId": destination.entity_id}
             if isinstance(destination, Airport)
-            else {"@type": destination}
+            else {"@type": destination.value}
         )
         res["placeOfStay"] = (
             destination.entity_id
