@@ -251,14 +251,31 @@ class SkyScanner:
             )
 
         data = req.json()
-        return [
-            Airport(
+        results = []
+        for e in data["inputSuggest"]:
+            # Extract entity type (PLACE_TYPE_AIRPORT, PLACE_TYPE_CITY, PLACE_TYPE_COUNTRY)
+            entity_type = e.get("navigation", {}).get("relevantFlightParams", {}).get("flightPlaceType", "")
+            # Normalize type names
+            if "AIRPORT" in entity_type:
+                entity_type = "AIRPORT"
+            elif "CITY" in entity_type:
+                entity_type = "CITY"
+            elif "COUNTRY" in entity_type:
+                entity_type = "COUNTRY"
+            else:
+                entity_type = ""
+
+            # Get subtitle (usually country/region info)
+            subtitle = e.get("presentation", {}).get("subtitle", "")
+
+            results.append(Airport(
                 title=e["presentation"]["title"],
                 entity_id=e["navigation"]["entityId"],
                 skyId=e["navigation"]["relevantFlightParams"]["skyId"],
-            )
-            for e in data["inputSuggest"]
-        ]
+                entity_type=entity_type,
+                subtitle=subtitle,
+            ))
+        return results
 
     @typechecked
     def search_locations(self, query: str) -> list[Location]:

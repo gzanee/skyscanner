@@ -3,7 +3,411 @@ from tkinter import ttk, messagebox
 import threading
 import datetime
 from skyscanner import SkyScanner
-from skyscanner.types import SpecialTypes
+from skyscanner.types import SpecialTypes, Airport
+
+
+class AirportSearchWidget(ttk.Frame):
+    """
+    Widget di ricerca aeroporti con autocomplete e selezione multipla.
+    Simile a Google Flights: scrivi, vedi suggerimenti, selezioni uno o più aeroporti.
+    """
+
+    def __init__(self, parent, scanner_ref, placeholder="Cerca aeroporto...", allow_everywhere=False, **kwargs):
+        super().__init__(parent, style="White.TFrame", **kwargs)
+
+        self.scanner_ref = scanner_ref  # Reference to get scanner when available
+        self.placeholder = placeholder
+        self.allow_everywhere = allow_everywhere
+        self.selected_airports = []  # List of Airport objects or special strings
+        self.search_results = []  # Current autocomplete results
+        self.search_after_id = None  # For debouncing
+        self.dropdown_visible = False
+
+        self._create_widgets()
+
+    def _create_widgets(self):
+        # Container per i tag degli aeroporti selezionati
+        self.tags_frame = ttk.Frame(self, style="White.TFrame")
+        self.tags_frame.pack(fill="x", pady=(0, 2))
+
+        # Frame per l'entry e il dropdown
+        self.entry_frame = ttk.Frame(self, style="White.TFrame")
+        self.entry_frame.pack(fill="x")
+
+        # Entry per la ricerca
+        self.search_var = tk.StringVar()
+        self.search_entry = tk.Entry(
+            self.entry_frame,
+            textvariable=self.search_var,
+            width=30,
+            font=("Segoe UI", 11),
+            bg="#ffffff",
+            fg="#1a1a2e",
+            relief="solid",
+            bd=1,
+            highlightthickness=2,
+            highlightbackground="#e1e5eb",
+            highlightcolor="#1a4fd6"
+        )
+        self.search_entry.pack(fill="x", ipady=5)
+
+        # Placeholder
+        self._set_placeholder()
+
+        # Bindings
+        self.search_entry.bind("<FocusIn>", self._on_focus_in)
+        self.search_entry.bind("<FocusOut>", self._on_focus_out)
+        self.search_entry.bind("<KeyRelease>", self._on_key_release)
+        self.search_entry.bind("<Down>", self._on_arrow_down)
+        self.search_entry.bind("<Up>", self._on_arrow_up)
+        self.search_entry.bind("<Return>", self._on_enter)
+        self.search_entry.bind("<Escape>", self._hide_dropdown)
+
+        # Dropdown Listbox (inizialmente nascosto)
+        self.dropdown_frame = None
+        self.dropdown_listbox = None
+
+    def _set_placeholder(self):
+        if not self.search_var.get() or self.search_var.get() == self.placeholder:
+            self.search_entry.config(fg="#9ca3af")
+            self.search_var.set(self.placeholder)
+
+    def _on_focus_in(self, event):
+        if self.search_var.get() == self.placeholder:
+            self.search_var.set("")
+            self.search_entry.config(fg="#1a1a2e")
+        # Mostra dropdown se ci sono risultati
+        if self.search_results:
+            self._show_dropdown()
+
+    def _on_focus_out(self, event):
+        # Delay per permettere click sul dropdown
+        self.after(200, self._check_focus_out)
+
+    def _check_focus_out(self):
+        if not self.search_entry.focus_get():
+            self._set_placeholder()
+            self._hide_dropdown(None)
+
+    def _on_key_release(self, event):
+        # Ignora tasti speciali
+        if event.keysym in ('Up', 'Down', 'Return', 'Escape', 'Shift_L', 'Shift_R', 'Control_L', 'Control_R'):
+            return
+
+        query = self.search_var.get().strip()
+
+        # Cancella ricerca precedente (debounce)
+        if self.search_after_id:
+            self.after_cancel(self.search_after_id)
+
+        if query and query != self.placeholder and len(query) >= 2:
+            # Debounce: aspetta 300ms prima di cercare
+            self.search_after_id = self.after(300, lambda: self._search_airports(query))
+        else:
+            self._hide_dropdown(None)
+
+    def _search_airports(self, query):
+        """Cerca aeroporti tramite API in un thread separato"""
+        def do_search():
+            try:
+                scanner = self.scanner_ref()
+                if scanner is None:
+                    # Crea uno scanner temporaneo per la ricerca
+                    scanner = SkyScanner(locale="it-IT", currency="EUR", market="IT")
+
+                results = scanner.search_airports(query)
+                # Aggiorna UI nel main thread
+                self.after(0, lambda: self._update_dropdown(results))
+            except Exception as e:
+                print(f"Errore ricerca aeroporti: {e}")
+                self.after(0, lambda: self._update_dropdown([]))
+
+        thread = threading.Thread(target=do_search, daemon=True)
+        thread.start()
+
+    def _update_dropdown(self, results):
+        """Aggiorna il dropdown con i risultati"""
+        self.search_results = results[:8]  # Max 8 risultati
+
+        if not self.search_results and not self.allow_everywhere:
+            self._hide_dropdown(None)
+            return
+
+        self._show_dropdown()
+
+    def _get_entity_icon(self, entity_type):
+        """Restituisce icona in base al tipo di entità"""
+        icons = {
+            "AIRPORT": "✈️",   # Aeroporto
+            "CITY": "🏙️",      # Città
+            "COUNTRY": "🌍",   # Paese/Nazione
+        }
+        return icons.get(entity_type, "📍")  # Default: pin generico
+
+    def _show_dropdown(self):
+        if self.dropdown_frame:
+            self.dropdown_frame.destroy()
+
+        if not self.search_results and not self.allow_everywhere:
+            return
+
+        # Crea Toplevel per il dropdown (si posiziona sopra tutto)
+        self.dropdown_frame = tk.Toplevel(self.winfo_toplevel())
+        self.dropdown_frame.withdraw()  # Nascondi temporaneamente
+        self.dropdown_frame.overrideredirect(True)  # Rimuovi decorazioni finestra
+        self.dropdown_frame.configure(bg="#ffffff")
+
+        # Frame interno con bordo
+        inner_frame = tk.Frame(
+            self.dropdown_frame,
+            bg="#ffffff",
+            highlightbackground="#e1e5eb",
+            highlightthickness=1
+        )
+        inner_frame.pack(fill="both", expand=True)
+
+        # Listbox
+        self.dropdown_listbox = tk.Listbox(
+            inner_frame,
+            font=("Segoe UI", 10),
+            bg="#ffffff",
+            fg="#1a1a2e",
+            selectbackground="#e8f0fe",
+            selectforeground="#1a1a2e",
+            borderwidth=0,
+            highlightthickness=0,
+            activestyle="none",
+            cursor="hand2"
+        )
+        self.dropdown_listbox.pack(fill="both", expand=True, padx=1, pady=1)
+
+        # Aggiungi opzione "Ovunque" se permesso
+        if self.allow_everywhere and not self.selected_airports:
+            self.dropdown_listbox.insert(tk.END, "🌍  Ovunque (cerca in tutto il mondo)")
+
+        # Aggiungi risultati con icone
+        for airport in self.search_results:
+            icon = self._get_entity_icon(airport.entity_type)
+            subtitle = f" - {airport.subtitle}" if airport.subtitle else ""
+            display_text = f"{icon}  {airport.title} ({airport.skyId}){subtitle}"
+            self.dropdown_listbox.insert(tk.END, display_text)
+
+        # Calcola altezza
+        num_items = self.dropdown_listbox.size()
+        self.dropdown_listbox.config(height=min(num_items, 8))
+
+        # Posiziona sotto l'entry
+        self.search_entry.update_idletasks()
+        x = self.search_entry.winfo_rootx()
+        y = self.search_entry.winfo_rooty() + self.search_entry.winfo_height()
+        width = max(self.search_entry.winfo_width(), 350)  # Minimo 350px per mostrare tutto
+
+        self.dropdown_frame.geometry(f"{width}x{min(num_items * 22 + 4, 180)}+{x}+{y}")
+        self.dropdown_frame.deiconify()  # Mostra
+        self.dropdown_frame.lift()
+
+        # Bindings
+        self.dropdown_listbox.bind("<ButtonRelease-1>", self._on_listbox_select)
+        self.dropdown_listbox.bind("<Motion>", self._on_listbox_hover)
+
+        # Chiudi dropdown se click fuori
+        self.dropdown_frame.bind("<FocusOut>", lambda e: self.after(100, self._check_dropdown_focus))
+
+        self.dropdown_visible = True
+
+    def _check_dropdown_focus(self):
+        """Controlla se chiudere il dropdown"""
+        try:
+            focused = self.winfo_toplevel().focus_get()
+            if focused not in (self.search_entry, self.dropdown_listbox):
+                self._hide_dropdown(None)
+        except:
+            pass
+
+    def _hide_dropdown(self, event):
+        if self.dropdown_frame:
+            self.dropdown_frame.destroy()
+            self.dropdown_frame = None
+        self.dropdown_visible = False
+
+    def _on_listbox_hover(self, event):
+        index = self.dropdown_listbox.nearest(event.y)
+        self.dropdown_listbox.selection_clear(0, tk.END)
+        self.dropdown_listbox.selection_set(index)
+
+    def _on_listbox_select(self, event):
+        selection = self.dropdown_listbox.curselection()
+        if selection:
+            self._select_item(selection[0])
+
+    def _on_arrow_down(self, event):
+        if not self.dropdown_visible:
+            if self.search_results:
+                self._show_dropdown()
+            return
+
+        current = self.dropdown_listbox.curselection()
+        if current:
+            next_idx = min(current[0] + 1, self.dropdown_listbox.size() - 1)
+        else:
+            next_idx = 0
+        self.dropdown_listbox.selection_clear(0, tk.END)
+        self.dropdown_listbox.selection_set(next_idx)
+        self.dropdown_listbox.see(next_idx)
+
+    def _on_arrow_up(self, event):
+        if not self.dropdown_visible:
+            return
+
+        current = self.dropdown_listbox.curselection()
+        if current:
+            prev_idx = max(current[0] - 1, 0)
+            self.dropdown_listbox.selection_clear(0, tk.END)
+            self.dropdown_listbox.selection_set(prev_idx)
+            self.dropdown_listbox.see(prev_idx)
+
+    def _on_enter(self, event):
+        if not self.dropdown_visible:
+            return
+
+        selection = self.dropdown_listbox.curselection()
+        if selection:
+            self._select_item(selection[0])
+
+    def _select_item(self, index):
+        """Seleziona un aeroporto dal dropdown"""
+        offset = 0
+
+        # Check se è "Ovunque"
+        if self.allow_everywhere and not self.selected_airports:
+            if index == 0:
+                first_item = self.dropdown_listbox.get(0)
+                if "Ovunque" in first_item:
+                    self.selected_airports = ["EVERYWHERE"]
+                    self._update_tags()
+                    self._hide_dropdown(None)
+                    self.search_var.set("")
+                    return
+            offset = 1 if "Ovunque" in self.dropdown_listbox.get(0) else 0
+
+        # Seleziona aeroporto dalla lista risultati
+        result_index = index - offset
+        if 0 <= result_index < len(self.search_results):
+            airport = self.search_results[result_index]
+
+            # Evita duplicati
+            if not any(a.skyId == airport.skyId for a in self.selected_airports if isinstance(a, Airport)):
+                # Se c'era "EVERYWHERE", rimuovilo
+                if "EVERYWHERE" in self.selected_airports:
+                    self.selected_airports.remove("EVERYWHERE")
+
+                self.selected_airports.append(airport)
+                self._update_tags()
+
+        self._hide_dropdown(None)
+        self.search_var.set("")
+        self.search_entry.focus_set()
+
+    def _update_tags(self):
+        """Aggiorna la visualizzazione dei tag degli aeroporti selezionati"""
+        # Rimuovi tag esistenti
+        for widget in self.tags_frame.winfo_children():
+            widget.destroy()
+
+        if not self.selected_airports:
+            return
+
+        for item in self.selected_airports:
+            if item == "EVERYWHERE":
+                tag_text = "🌍 Ovunque"
+                tag_data = "EVERYWHERE"
+            else:
+                tag_text = f"{item.skyId}"
+                tag_data = item
+
+            tag_frame = tk.Frame(
+                self.tags_frame,
+                bg="#e8f0fe",
+                padx=8,
+                pady=2
+            )
+            tag_frame.pack(side="left", padx=(0, 5), pady=2)
+
+            tag_label = tk.Label(
+                tag_frame,
+                text=tag_text,
+                font=("Segoe UI", 9),
+                bg="#e8f0fe",
+                fg="#1a4fd6"
+            )
+            tag_label.pack(side="left")
+
+            # Pulsante rimuovi
+            remove_btn = tk.Label(
+                tag_frame,
+                text="×",
+                font=("Segoe UI", 10, "bold"),
+                bg="#e8f0fe",
+                fg="#6b7280",
+                cursor="hand2"
+            )
+            remove_btn.pack(side="left", padx=(4, 0))
+            remove_btn.bind("<Button-1>", lambda e, d=tag_data: self._remove_tag(d))
+
+    def _remove_tag(self, tag_data):
+        """Rimuovi un aeroporto dalla selezione"""
+        if tag_data == "EVERYWHERE":
+            self.selected_airports = [a for a in self.selected_airports if a != "EVERYWHERE"]
+        else:
+            self.selected_airports = [a for a in self.selected_airports if not (isinstance(a, Airport) and a.skyId == tag_data.skyId)]
+        self._update_tags()
+
+    def get_selected(self):
+        """Ritorna la lista di aeroporti selezionati"""
+        return self.selected_airports
+
+    def get_airport_codes(self):
+        """Ritorna lista di codici IATA degli aeroporti selezionati"""
+        codes = []
+        for item in self.selected_airports:
+            if item == "EVERYWHERE":
+                codes.append("EVERYWHERE")
+            elif isinstance(item, Airport):
+                codes.append(item.skyId)
+        return codes
+
+    def is_everywhere(self):
+        """Controlla se è selezionato 'Ovunque'"""
+        return "EVERYWHERE" in self.selected_airports
+
+    def set_default(self, airport_code, airport_name=""):
+        """Imposta un aeroporto di default"""
+        # Crea un Airport fittizio se non abbiamo i dati completi
+        if airport_code == "EVERYWHERE":
+            self.selected_airports = ["EVERYWHERE"]
+        else:
+            # Cerca l'aeroporto per avere i dati completi
+            def fetch_airport():
+                try:
+                    scanner = SkyScanner(locale="it-IT", currency="EUR", market="IT")
+                    airport = scanner.get_airport_by_code(airport_code)
+                    self.after(0, lambda: self._set_airport(airport))
+                except Exception as e:
+                    # Fallback: crea oggetto Airport basic
+                    basic_airport = Airport(
+                        title=airport_name or airport_code,
+                        entity_id="",
+                        skyId=airport_code
+                    )
+                    self.after(0, lambda: self._set_airport(basic_airport))
+
+            thread = threading.Thread(target=fetch_airport, daemon=True)
+            thread.start()
+
+    def _set_airport(self, airport):
+        """Imposta un aeroporto"""
+        self.selected_airports = [airport]
+        self._update_tags()
 
 
 class ModernLightStyle:
@@ -146,7 +550,7 @@ class FlightCard(ttk.Frame):
         dep_frame = ttk.Frame(times_frame, style="White.TFrame")
         dep_frame.pack(side="left")
         ttk.Label(dep_frame, text=flight_data["partenza"], style="Time.TLabel").pack()
-        ttk.Label(dep_frame, text="VCE", style="CardSmall.TLabel").pack()
+        ttk.Label(dep_frame, text=flight_data.get("codice_origine", "???"), style="CardSmall.TLabel").pack()
 
         # Duration line
         duration_frame = ttk.Frame(times_frame, style="White.TFrame")
@@ -260,7 +664,6 @@ class FlightSearchApp:
         self.flight_cards = []
 
         self.create_widgets()
-        self.load_airports()
 
     def create_widgets(self):
         # Main container with padding
@@ -288,30 +691,40 @@ class FlightSearchApp:
         form_frame = ttk.Frame(search_card, style="White.TFrame")
         form_frame.pack(fill="x", padx=20, pady=15)
 
-        # From
+        # From - Airport search with autocomplete (multi-select)
         from_frame = ttk.Frame(form_frame, style="White.TFrame")
         from_frame.pack(side="left", padx=(0, 15))
-        ttk.Label(from_frame, text="Da", style="FilterLabel.TLabel").pack(anchor="w")
-        self.origin_var = tk.StringVar(value="Venezia (VCE)")
-        self.origin_combo = ttk.Combobox(from_frame, textvariable=self.origin_var,
-                                         width=25, font=("Segoe UI", 11), state="readonly")
-        self.origin_combo.pack(pady=(5, 0), ipady=5)
+        ttk.Label(from_frame, text="Da (puoi aggiungere più aeroporti)", style="FilterLabel.TLabel").pack(anchor="w")
+        self.origin_search = AirportSearchWidget(
+            from_frame,
+            scanner_ref=lambda: self.scanner,
+            placeholder="Cerca aeroporto...",
+            allow_everywhere=False
+        )
+        self.origin_search.pack(pady=(5, 0))
+        # Imposta VCE come default
+        self.origin_search.set_default("VCE", "Venezia")
 
         # Swap button
         swap_btn = tk.Button(form_frame, text="⇄", font=("Segoe UI", 14),
                             bg=ModernLightStyle.BG_WHITE, fg=ModernLightStyle.PRIMARY,
-                            relief="flat", cursor="hand2", width=3)
+                            relief="flat", cursor="hand2", width=3,
+                            command=self._swap_airports)
         swap_btn.pack(side="left", padx=5, pady=(15, 0))
 
-        # To
+        # To - Airport search with autocomplete (multi-select + everywhere option)
         to_frame = ttk.Frame(form_frame, style="White.TFrame")
         to_frame.pack(side="left", padx=(0, 15))
-        ttk.Label(to_frame, text="A", style="FilterLabel.TLabel").pack(anchor="w")
-        self.dest_var = tk.StringVar(value="🌍 Ovunque")
-        self.dest_combo = ttk.Combobox(to_frame, textvariable=self.dest_var,
-                                       width=25, font=("Segoe UI", 11), state="readonly")
-        self.dest_combo["values"] = ["🌍 Ovunque"]
-        self.dest_combo.pack(pady=(5, 0), ipady=5)
+        ttk.Label(to_frame, text="A (puoi aggiungere più aeroporti)", style="FilterLabel.TLabel").pack(anchor="w")
+        self.dest_search = AirportSearchWidget(
+            to_frame,
+            scanner_ref=lambda: self.scanner,
+            placeholder="Cerca o lascia vuoto per Ovunque",
+            allow_everywhere=True
+        )
+        self.dest_search.pack(pady=(5, 0))
+        # Imposta "Ovunque" come default
+        self.dest_search.set_default("EVERYWHERE")
 
         # Date
         date_frame = ttk.Frame(form_frame, style="White.TFrame")
@@ -483,29 +896,29 @@ class FlightSearchApp:
         self.canvas.bind_all("<MouseWheel>",
                             lambda e: self.canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
 
-    def load_airports(self):
-        """Load common airports for dropdown"""
-        airports = [
-            "Venezia (VCE)",
-            "Milano Malpensa (MXP)",
-            "Milano Linate (LIN)",
-            "Roma Fiumicino (FCO)",
-            "Bologna (BLQ)",
-            "Napoli (NAP)",
-            "Torino (TRN)",
-            "Firenze (FLR)",
-            "Verona (VRN)",
-            "Bergamo (BGY)",
-            "Treviso (TSF)",
-            "Bari (BRI)",
-            "Catania (CTA)",
-            "Palermo (PMO)"
-        ]
-        self.origin_combo["values"] = airports
-        self.dest_combo["values"] = ["🌍 Ovunque"] + airports
+    def _swap_airports(self):
+        """Scambia aeroporti di partenza e arrivo"""
+        origin_airports = self.origin_search.get_selected()
+        dest_airports = self.dest_search.get_selected()
+
+        # Non scambiare se destinazione è "Ovunque"
+        if self.dest_search.is_everywhere():
+            return
+
+        # Scambia
+        self.origin_search.selected_airports = dest_airports
+        self.dest_search.selected_airports = origin_airports
+        self.origin_search._update_tags()
+        self.dest_search._update_tags()
 
     def start_search(self):
         if self.searching:
+            return
+
+        # Validate origins
+        origin_airports = self.origin_search.get_selected()
+        if not origin_airports:
+            messagebox.showerror("Errore", "Seleziona almeno un aeroporto di partenza")
             return
 
         # Validate input
@@ -531,17 +944,15 @@ class FlightSearchApp:
         self.stats_var.set("")
         self.results_title.config(text="Ricerca in corso...")
 
-        # Get origin airport code
-        origin_text = self.origin_var.get()
-        origin_code = origin_text.split("(")[-1].replace(")", "").strip() if "(" in origin_text else "VCE"
-
-        # Check if destination is "Everywhere"
-        dest_text = self.dest_var.get()
-        search_everywhere = "Ovunque" in dest_text
+        # Get selected airports
+        origin_list = [a for a in origin_airports if isinstance(a, Airport)]
+        dest_airports = self.dest_search.get_selected()
+        search_everywhere = self.dest_search.is_everywhere()
+        dest_list = [a for a in dest_airports if isinstance(a, Airport)] if not search_everywhere else []
 
         thread = threading.Thread(
             target=self.search_flights,
-            args=(depart_date, max_price, min_hour, origin_code, search_everywhere)
+            args=(depart_date, max_price, min_hour, origin_list, search_everywhere, dest_list)
         )
         thread.daemon = True
         thread.start()
@@ -577,7 +988,12 @@ class FlightSearchApp:
         self.root.after(0, self.update_count)
         self.root.update_idletasks()
 
-    def search_flights(self, depart_date, max_price, min_hour, origin_code, search_everywhere):
+    def search_flights(self, depart_date, max_price, min_hour, origin_list, search_everywhere, dest_list=None):
+        """
+        Cerca voli da una lista di aeroporti di partenza.
+        origin_list: lista di Airport objects
+        dest_list: lista di Airport objects (vuota se search_everywhere)
+        """
         try:
             # Step 1: Initialize
             self.update_action("⏳ Inizializzazione...")
@@ -586,23 +1002,27 @@ class FlightSearchApp:
 
             self.scanner = SkyScanner(locale="it-IT", currency="EUR", market="IT")
 
-            # Step 2: Get origin airport
-            self.update_action("🔍 Ricerca aeroporto...")
-            self.update_step(f"Cerco aeroporto: {origin_code}")
+            origin_codes = [a.skyId for a in origin_list]
+            self.update_action("🔍 Aeroporti di partenza...")
+            self.update_step(f"Cerco da: {', '.join(origin_codes)}")
             self.update_progress(5)
 
-            origin = self.scanner.get_airport_by_code(origin_code)
-
             if search_everywhere:
-                self._search_everywhere(origin, depart_date, max_price, min_hour)
+                # Cerca "ovunque" da tutti gli aeroporti di partenza
+                self._search_everywhere_multi(origin_list, depart_date, max_price, min_hour)
+            elif dest_list:
+                # Cerca verso destinazioni specifiche da tutti gli aeroporti di partenza
+                self._search_specific_destinations(origin_list, dest_list, depart_date, max_price, min_hour)
             else:
                 self.update_action("✅ Completato")
-                self.update_step("Ricerca specifica destinazione non ancora implementata")
+                self.update_step("Seleziona almeno una destinazione o 'Ovunque'")
 
         except Exception as e:
             self.update_action("❌ Errore")
             self.update_step(str(e))
-            messagebox.showerror("Errore", str(e))
+            import traceback
+            traceback.print_exc()
+            self.root.after(0, lambda: messagebox.showerror("Errore", str(e)))
 
         finally:
             self.searching = False
@@ -611,39 +1031,53 @@ class FlightSearchApp:
             self.root.after(0, lambda: self.results_title.config(
                 text=f"Trovati {self.flight_count} voli"))
 
-    def _search_everywhere(self, origin, depart_date, max_price, min_hour):
-        """Search flights to everywhere"""
+    def _search_everywhere_multi(self, origin_list, depart_date, max_price, min_hour):
+        """Search flights to everywhere from multiple origin airports"""
 
-        # Step 3: Search countries
-        self.update_action("🌍 Ricerca paesi economici...")
-        self.update_step("Interrogo Skyscanner per destinazioni sotto budget")
-        self.update_progress(10)
+        origin_codes = [o.skyId for o in origin_list]
+        total_origins = len(origin_list)
 
-        response = self.scanner.get_flight_prices(
-            origin=origin,
-            destination=SpecialTypes.EVERYWHERE,
-            depart_date=depart_date
-        )
+        # Collect all countries from all origins
+        all_countries = {}  # skyCode -> {name, skyCode}
 
-        countries = []
-        for r in response.json.get("everywhereDestination", {}).get("results", []):
-            content = r.get("content", {})
-            location = content.get("location", {})
-            price = content.get("flightQuotes", {}).get("cheapest", {}).get("rawPrice", 999999)
-            if location.get("name") and location.get("skyCode") and price and price <= max_price:
-                countries.append({"name": location["name"], "skyCode": location["skyCode"]})
+        for origin_idx, origin in enumerate(origin_list):
+            self.update_action(f"🌍 Ricerca paesi da {origin.skyId}... ({origin_idx+1}/{total_origins})")
+            self.update_step("Interrogo Skyscanner per destinazioni sotto budget")
+            progress = 5 + (origin_idx / total_origins) * 10
+            self.update_progress(progress)
 
+            try:
+                response = self.scanner.get_flight_prices(
+                    origin=origin,
+                    destination=SpecialTypes.EVERYWHERE,
+                    depart_date=depart_date
+                )
+
+                for r in response.json.get("everywhereDestination", {}).get("results", []):
+                    content = r.get("content", {})
+                    location = content.get("location", {})
+                    price = content.get("flightQuotes", {}).get("cheapest", {}).get("rawPrice", 999999)
+                    if location.get("name") and location.get("skyCode") and price and price <= max_price:
+                        sky_code = location["skyCode"]
+                        if sky_code not in all_countries:
+                            all_countries[sky_code] = {"name": location["name"], "skyCode": sky_code}
+            except:
+                continue
+
+        countries = list(all_countries.values())
         self.update_action(f"✓ Trovati {len(countries)} paesi")
         self.update_step("Cerco città in ogni paese...")
         self.update_progress(15)
-        self.update_stats(f"Paesi sotto €{max_price:.0f}: {len(countries)}")
+        self.update_stats(f"Paesi sotto €{max_price:.0f}: {len(countries)} | Aeroporti partenza: {total_origins}")
 
-        # Step 4: Get cities
-        all_cities = []
+        # Get cities (use first origin to find cities, then search from all origins)
+        all_cities = {}  # skyCode -> {name, skyCode, country}
+        first_origin = origin_list[0]
+
         for i, country in enumerate(countries):
             self.update_action(f"📍 Analisi paesi... ({i+1}/{len(countries)})")
             self.update_step(f"Cerco città in: {country['name']}")
-            progress = 15 + (i / len(countries)) * 25
+            progress = 15 + (i / len(countries)) * 20
             self.update_progress(progress)
 
             try:
@@ -654,7 +1088,7 @@ class FlightSearchApp:
                                       country_airports[0])
 
                 country_response = self.scanner.get_flight_prices(
-                    origin=origin, destination=country_entity, depart_date=depart_date
+                    origin=first_origin, destination=country_entity, depart_date=depart_date
                 )
 
                 for r in country_response.json.get("countryDestination", {}).get("results", []):
@@ -662,142 +1096,202 @@ class FlightSearchApp:
                     location = content.get("location", {})
                     city_price = content.get("flightQuotes", {}).get("cheapest", {}).get("rawPrice", 999999)
                     if location.get("name") and location.get("skyCode") and city_price and city_price <= max_price:
-                        all_cities.append({
-                            "name": location["name"],
-                            "skyCode": location["skyCode"],
-                            "country": country["name"]
-                        })
+                        sky_code = location["skyCode"]
+                        if sky_code not in all_cities:
+                            all_cities[sky_code] = {
+                                "name": location["name"],
+                                "skyCode": sky_code,
+                                "country": country["name"]
+                            }
             except:
                 continue
 
-        # Remove duplicates
-        seen = set()
-        cities = []
-        for c in all_cities:
-            if c["skyCode"] not in seen:
-                seen.add(c["skyCode"])
-                cities.append(c)
-
+        cities = list(all_cities.values())
         self.update_action(f"✓ Trovate {len(cities)} città")
         self.update_step("Inizio ricerca voli specifici...")
-        self.update_progress(40)
-        self.update_stats(f"Paesi: {len(countries)} | Città: {len(cities)}")
+        self.update_progress(35)
+        self.update_stats(f"Paesi: {len(countries)} | Città: {len(cities)} | Aeroporti: {total_origins}")
 
-        # Step 5: Search flights
+        # Search flights from ALL origins to each city
         voli_trovati = []
+        voli_keys = set()  # Per evitare duplicati
         direct_only = self.direct_var.get()
         same_day = self.same_day_var.get()
 
-        for i, city in enumerate(cities):
-            self.update_action(f"✈ Ricerca voli... ({i+1}/{len(cities)})")
-            self.update_step(f"Cerco voli per: {city['name']} ({city['country']})")
-            progress = 40 + (i / len(cities)) * 55
-            self.update_progress(progress)
+        total_searches = len(cities) * total_origins
+        search_count = 0
 
-            try:
-                city_airports = self.scanner.search_airports(city["skyCode"])
-                if not city_airports:
+        for city in cities:
+            for origin in origin_list:
+                search_count += 1
+                self.update_action(f"✈ Ricerca voli... ({search_count}/{total_searches})")
+                self.update_step(f"{origin.skyId} → {city['name']} ({city['country']})")
+                progress = 35 + (search_count / total_searches) * 60
+                self.update_progress(progress)
+
+                try:
+                    city_airports = self.scanner.search_airports(city["skyCode"])
+                    if not city_airports:
+                        continue
+
+                    flight_response = self.scanner.get_flight_prices(
+                        origin=origin, destination=city_airports[0], depart_date=depart_date
+                    )
+
+                    self._process_flight_response(
+                        flight_response, origin, city, depart_date,
+                        max_price, min_hour, direct_only, same_day,
+                        voli_trovati, voli_keys
+                    )
+                except:
                     continue
-
-                flight_response = self.scanner.get_flight_prices(
-                    origin=origin, destination=city_airports[0], depart_date=depart_date
-                )
-
-                voli_visti = set()
-                for bucket in flight_response.json.get("itineraries", {}).get("buckets", []):
-                    for item in bucket.get("items", []):
-                        if item["id"] in voli_visti:
-                            continue
-                        voli_visti.add(item["id"])
-
-                        price = item.get("price", {}).get("raw", 999999)
-                        if price > max_price:
-                            continue
-
-                        leg = item.get("legs", [{}])[0]
-                        dep_str = leg.get("departure", "")
-                        arr_str = leg.get("arrival", "")
-                        if not dep_str or not arr_str:
-                            continue
-
-                        dep = datetime.datetime.fromisoformat(dep_str)
-                        arr = datetime.datetime.fromisoformat(arr_str)
-
-                        if dep.hour < min_hour:
-                            continue
-
-                        if same_day and arr.date() != dep.date():
-                            continue
-
-                        stops = leg.get("stopCount", 0)
-                        if direct_only and stops > 0:
-                            continue
-
-                        duration = leg.get("durationInMinutes", 0)
-                        carriers = leg.get("carriers", {}).get("marketing", [])
-                        dest_info = leg.get("destination", {})
-
-                        # Extract stopover details from segments
-                        segments = leg.get("segments", [])
-                        stopovers = []
-                        if stops > 0 and len(segments) > 1:
-                            for seg_idx in range(len(segments) - 1):
-                                seg = segments[seg_idx]
-                                next_seg = segments[seg_idx + 1]
-
-                                # Stopover location (destination of current segment)
-                                stop_dest = seg.get("destination", {})
-                                stop_city = stop_dest.get("city", stop_dest.get("name", ""))
-                                stop_code = stop_dest.get("displayCode", "")
-
-                                # Times
-                                seg_arr = seg.get("arrival", "")
-                                next_dep = next_seg.get("departure", "")
-
-                                # Calculate layover duration
-                                layover_min = 0
-                                if seg_arr and next_dep:
-                                    try:
-                                        arr_time = datetime.datetime.fromisoformat(seg_arr)
-                                        dep_time = datetime.datetime.fromisoformat(next_dep)
-                                        layover_min = int((dep_time - arr_time).total_seconds() / 60)
-                                    except:
-                                        pass
-
-                                stopovers.append({
-                                    "città": stop_city,
-                                    "codice": stop_code,
-                                    "arrivo": datetime.datetime.fromisoformat(seg_arr).strftime("%H:%M") if seg_arr else "",
-                                    "partenza": datetime.datetime.fromisoformat(next_dep).strftime("%H:%M") if next_dep else "",
-                                    "attesa": f"{layover_min // 60}h {layover_min % 60:02d}min" if layover_min > 0 else ""
-                                })
-
-                        flight = {
-                            "città": dest_info.get("city", city["name"]),
-                            "paese": dest_info.get("country", city["country"]),
-                            "codice_dest": dest_info.get("displayCode", city["skyCode"]),
-                            "prezzo": price,
-                            "partenza": dep.strftime("%H:%M"),
-                            "arrivo": arr.strftime("%H:%M"),
-                            "durata": f"{duration // 60}h {duration % 60:02d}min",
-                            "durata_min": duration,
-                            "scali": stops,
-                            "stopovers": stopovers,
-                            "compagnia": carriers[0].get("name", "N/A") if carriers else "N/A"
-                        }
-
-                        key = f"{flight['città']}-{flight['partenza']}-{flight['prezzo']}"
-                        if key not in [f"{v['città']}-{v['partenza']}-{v['prezzo']}" for v in voli_trovati]:
-                            voli_trovati.append(flight)
-                            self.root.after(0, lambda f=flight: self.add_flight_card(f))
-            except:
-                continue
 
         # Done
         self.update_action(f"✅ Ricerca completata!")
         self.update_step(f"Trovati {len(voli_trovati)} voli che rispettano i tuoi criteri")
         self.update_progress(100)
-        self.update_stats(f"Paesi: {len(countries)} | Città: {len(cities)} | Voli analizzati: {len(cities) * 10}+")
+        self.update_stats(f"Paesi: {len(countries)} | Città: {len(cities)} | Partenze: {', '.join(origin_codes)}")
+
+    def _search_specific_destinations(self, origin_list, dest_list, depart_date, max_price, min_hour):
+        """Search flights from multiple origins to specific destinations"""
+
+        origin_codes = [o.skyId for o in origin_list]
+        dest_codes = [d.skyId for d in dest_list]
+
+        self.update_action(f"✈ Ricerca voli...")
+        self.update_step(f"Da {', '.join(origin_codes)} → A {', '.join(dest_codes)}")
+        self.update_progress(10)
+
+        voli_trovati = []
+        voli_keys = set()
+        direct_only = self.direct_var.get()
+        same_day = self.same_day_var.get()
+
+        total_searches = len(origin_list) * len(dest_list)
+        search_count = 0
+
+        for origin in origin_list:
+            for dest in dest_list:
+                search_count += 1
+                self.update_action(f"✈ Ricerca voli... ({search_count}/{total_searches})")
+                self.update_step(f"{origin.skyId} → {dest.skyId}")
+                progress = 10 + (search_count / total_searches) * 85
+                self.update_progress(progress)
+
+                try:
+                    flight_response = self.scanner.get_flight_prices(
+                        origin=origin, destination=dest, depart_date=depart_date
+                    )
+
+                    city_info = {"name": dest.title, "skyCode": dest.skyId, "country": ""}
+
+                    self._process_flight_response(
+                        flight_response, origin, city_info, depart_date,
+                        max_price, min_hour, direct_only, same_day,
+                        voli_trovati, voli_keys
+                    )
+                except:
+                    continue
+
+        # Done
+        self.update_action(f"✅ Ricerca completata!")
+        self.update_step(f"Trovati {len(voli_trovati)} voli")
+        self.update_progress(100)
+        self.update_stats(f"Partenze: {', '.join(origin_codes)} | Destinazioni: {', '.join(dest_codes)}")
+
+    def _process_flight_response(self, flight_response, origin, city, depart_date,
+                                  max_price, min_hour, direct_only, same_day,
+                                  voli_trovati, voli_keys):
+        """Process flight response and extract matching flights"""
+
+        voli_visti = set()
+        for bucket in flight_response.json.get("itineraries", {}).get("buckets", []):
+            for item in bucket.get("items", []):
+                if item["id"] in voli_visti:
+                    continue
+                voli_visti.add(item["id"])
+
+                price = item.get("price", {}).get("raw", 999999)
+                if price > max_price:
+                    continue
+
+                leg = item.get("legs", [{}])[0]
+                dep_str = leg.get("departure", "")
+                arr_str = leg.get("arrival", "")
+                if not dep_str or not arr_str:
+                    continue
+
+                dep = datetime.datetime.fromisoformat(dep_str)
+                arr = datetime.datetime.fromisoformat(arr_str)
+
+                if dep.hour < min_hour:
+                    continue
+
+                if same_day and arr.date() != dep.date():
+                    continue
+
+                stops = leg.get("stopCount", 0)
+                if direct_only and stops > 0:
+                    continue
+
+                duration = leg.get("durationInMinutes", 0)
+                carriers = leg.get("carriers", {}).get("marketing", [])
+                dest_info = leg.get("destination", {})
+                origin_info = leg.get("origin", {})
+
+                # Extract stopover details from segments
+                segments = leg.get("segments", [])
+                stopovers = []
+                if stops > 0 and len(segments) > 1:
+                    for seg_idx in range(len(segments) - 1):
+                        seg = segments[seg_idx]
+                        next_seg = segments[seg_idx + 1]
+
+                        stop_dest = seg.get("destination", {})
+                        stop_city = stop_dest.get("city", stop_dest.get("name", ""))
+                        stop_code = stop_dest.get("displayCode", "")
+
+                        seg_arr = seg.get("arrival", "")
+                        next_dep = next_seg.get("departure", "")
+
+                        layover_min = 0
+                        if seg_arr and next_dep:
+                            try:
+                                arr_time = datetime.datetime.fromisoformat(seg_arr)
+                                dep_time = datetime.datetime.fromisoformat(next_dep)
+                                layover_min = int((dep_time - arr_time).total_seconds() / 60)
+                            except:
+                                pass
+
+                        stopovers.append({
+                            "città": stop_city,
+                            "codice": stop_code,
+                            "arrivo": datetime.datetime.fromisoformat(seg_arr).strftime("%H:%M") if seg_arr else "",
+                            "partenza": datetime.datetime.fromisoformat(next_dep).strftime("%H:%M") if next_dep else "",
+                            "attesa": f"{layover_min // 60}h {layover_min % 60:02d}min" if layover_min > 0 else ""
+                        })
+
+                flight = {
+                    "città": dest_info.get("city", city["name"]),
+                    "paese": dest_info.get("country", city.get("country", "")),
+                    "codice_dest": dest_info.get("displayCode", city["skyCode"]),
+                    "codice_origine": origin_info.get("displayCode", origin.skyId),  # Codice aeroporto partenza
+                    "prezzo": price,
+                    "partenza": dep.strftime("%H:%M"),
+                    "arrivo": arr.strftime("%H:%M"),
+                    "durata": f"{duration // 60}h {duration % 60:02d}min",
+                    "durata_min": duration,
+                    "scali": stops,
+                    "stopovers": stopovers,
+                    "compagnia": carriers[0].get("name", "N/A") if carriers else "N/A"
+                }
+
+                # Chiave unica per evitare duplicati (include origine!)
+                key = f"{flight['codice_origine']}-{flight['codice_dest']}-{flight['partenza']}-{flight['prezzo']}"
+                if key not in voli_keys:
+                    voli_keys.add(key)
+                    voli_trovati.append(flight)
+                    self.root.after(0, lambda f=flight: self.add_flight_card(f))
 
 
 if __name__ == "__main__":

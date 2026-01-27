@@ -26,16 +26,20 @@ class Location:
 @dataclass(frozen=True)
 class Airport:
     """
-    Represents an airport in the Skyscanner system.
+    Represents an airport, city or country in the Skyscanner system.
 
     Attributes:
-        title (str): The display name of the airport (e.g. "London Heathrow").
-        entity_id (str): The internal Skyscanner entity ID for the airport.
+        title (str): The display name (e.g. "London Heathrow").
+        entity_id (str): The internal Skyscanner entity ID.
         skyId (str): The IATA-style Skyscanner identifier (used in search requests).
+        entity_type (str): Type of entity - "AIRPORT", "CITY", "COUNTRY" or empty string.
+        subtitle (str): Additional info like country name.
     """
     title: str
     entity_id: str
     skyId: str
+    entity_type: str = ""  # AIRPORT, CITY, COUNTRY
+    subtitle: str = ""
 
 @dataclass
 class SkyscannerResponse:
@@ -69,5 +73,4 @@ class CabinClass(Enum):
 class SpecialTypes(Enum):
     ANYTIME = "anytime"
     EVERYWHERE = "everywhere"
-
 
