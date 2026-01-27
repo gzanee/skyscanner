@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Flight Booking - Cerca Voli</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+</head>
+<body>
+  <div class="app">
+    <header class="app-header">
+      <h1>✈ Flight Booking</h1>
+      <p>Cerca voli economici con la stessa logica dell'app originale, in versione web.</p>
+    </header>
+
+    <section class="card search-card">
+      <form id="search-form">
+        <div class="form-row">
+          <div class="field">
+            <label>Da (puoi aggiungere più aeroporti)</label>
+            <div class="airport-selector" data-allow-everywhere="false" id="origin-selector">
+              <div class="tags"></div>
+              <input type="text" placeholder="Cerca aeroporto..." />
+              <ul class="dropdown"></ul>
+            </div>
+          </div>
+
+          <button type="button" class="swap" id="swap-btn" aria-label="Scambia aeroporti">⇄</button>
+
+          <div class="field">
+            <label>A (puoi aggiungere più aeroporti)</label>
+            <div class="airport-selector" data-allow-everywhere="true" id="dest-selector">
+              <div class="tags"></div>
+              <input type="text" placeholder="Cerca o lascia vuoto per Ovunque" />
+              <ul class="dropdown"></ul>
+            </div>
+          </div>
+
+          <div class="field date-field">
+            <label>Data Partenza</label>
+            <input type="date" id="depart-date" value="" />
+          </div>
+
+          <div class="field action-field">
+            <button type="submit" id="search-btn">🔍 Cerca Voli</button>
+          </div>
+        </div>
+
+        <div class="filters">
+          <div class="field inline">
+            <label for="max-price">Prezzo max €</label>
+            <input type="number" id="max-price" value="100" min="0" />
+          </div>
+
+          <div class="field inline">
+            <label for="min-hour">Partenza dalle ore</label>
+            <input type="number" id="min-hour" value="18" min="0" max="23" />
+          </div>
+
+          <div class="field inline checkbox">
+            <input type="checkbox" id="direct-only" />
+            <label for="direct-only">Solo voli diretti</label>
+          </div>
+
+          <div class="field inline checkbox">
+            <input type="checkbox" id="same-day" checked />
+            <label for="same-day">Arrivo stesso giorno</label>
+          </div>
+        </div>
+      </form>
+    </section>
+
+    <section class="status">
+      <div>
+        <h2 id="status-title">Seleziona il tuo volo</h2>
+        <p id="status-subtitle"></p>
+      </div>
+      <div class="stats" id="stats"></div>
+    </section>
+
+    <section class="sort-bar">
+      <span>Ordina per:</span>
+      <label><input type="radio" name="sort" value="prezzo" checked /> Prezzo</label>
+      <label><input type="radio" name="sort" value="orario" /> Orario</label>
+      <label><input type="radio" name="sort" value="durata" /> Durata</label>
+    </section>
+
+    <section class="results" id="results"></section>
+  </div>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

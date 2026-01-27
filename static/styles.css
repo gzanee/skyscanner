@@ -1,0 +1,408 @@
+:root {
+  color-scheme: light;
+  --bg: #f4f6fb;
+  --card: #ffffff;
+  --border: #e1e5eb;
+  --primary: #1a4fd6;
+  --primary-hover: #1542b0;
+  --text: #1a1a2e;
+  --muted: #6b7280;
+  --soft: #e8f0fe;
+  --success: #10b981;
+  --warning: #f59e0b;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.app {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 32px 24px 60px;
+}
+
+.app-header {
+  margin-bottom: 24px;
+}
+
+.app-header h1 {
+  font-size: 28px;
+  margin-bottom: 6px;
+}
+
+.app-header p {
+  color: var(--muted);
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: 0 10px 30px rgba(26, 79, 214, 0.06);
+}
+
+.search-card {
+  margin-bottom: 24px;
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: 1.4fr auto 1.4fr 0.7fr 0.7fr;
+  gap: 16px;
+  align-items: end;
+}
+
+.field label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.field input[type="text"],
+.field input[type="number"],
+.field input[type="date"] {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  font-size: 14px;
+  outline: none;
+  background: #fff;
+  color: var(--text);
+}
+
+.field input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px rgba(26, 79, 214, 0.15);
+}
+
+.swap {
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--primary);
+  font-size: 18px;
+  border-radius: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+  height: 44px;
+}
+
+.swap:hover {
+  border-color: var(--primary);
+}
+
+#search-btn {
+  width: 100%;
+  padding: 12px 16px;
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+#search-btn:hover {
+  background: var(--primary-hover);
+}
+
+#search-btn[disabled] {
+  background: #9ca3af;
+  cursor: not-allowed;
+}
+
+.filters {
+  margin-top: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.field.inline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.field.inline.checkbox {
+  gap: 8px;
+}
+
+.field.inline label {
+  margin: 0;
+}
+
+.airport-selector {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 8px;
+  background: #fff;
+  min-height: 54px;
+}
+
+.airport-selector input {
+  border: none;
+  padding: 6px;
+  width: 100%;
+  font-size: 14px;
+  outline: none;
+}
+
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.tag {
+  background: var(--soft);
+  color: var(--primary);
+  padding: 4px 8px;
+  border-radius: 20px;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tag button {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-weight: bold;
+}
+
+.dropdown {
+  list-style: none;
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  max-height: 220px;
+  overflow-y: auto;
+  box-shadow: 0 10px 30px rgba(26, 79, 214, 0.12);
+  display: none;
+  z-index: 10;
+}
+
+.dropdown.show {
+  display: block;
+}
+
+.dropdown li {
+  padding: 10px 12px;
+  cursor: pointer;
+  font-size: 14px;
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.dropdown li:hover {
+  background: var(--soft);
+}
+
+.dropdown .meta {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.status {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 16px;
+  gap: 16px;
+}
+
+.status h2 {
+  font-size: 20px;
+}
+
+.status p {
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.stats {
+  color: var(--success);
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.sort-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  color: var(--muted);
+}
+
+.sort-bar label {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.results {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.flight-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 16px 20px;
+  display: grid;
+  gap: 10px;
+}
+
+.flight-top {
+  display: grid;
+  grid-template-columns: 140px 1fr 140px;
+  gap: 16px;
+  align-items: center;
+}
+
+.airline {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.logo {
+  width: 48px;
+  height: 48px;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-weight: 600;
+}
+
+.times {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+
+.time-block {
+  text-align: center;
+}
+
+.time-block strong {
+  display: block;
+  font-size: 18px;
+}
+
+.line {
+  flex: 1;
+  height: 2px;
+  background: var(--border);
+  position: relative;
+  margin: 0 12px;
+}
+
+.line::before,
+.line::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  background: var(--primary);
+  border-radius: 50%;
+  transform: translateY(-50%);
+}
+
+.line::before {
+  left: -4px;
+}
+
+.line::after {
+  right: -4px;
+}
+
+.stops {
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.price {
+  text-align: right;
+}
+
+.price strong {
+  color: var(--primary);
+  font-size: 20px;
+}
+
+.price span {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.stopovers {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.stopovers span {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.stopovers .icon {
+  color: var(--warning);
+}
+
+@media (max-width: 1024px) {
+  .form-row {
+    grid-template-columns: 1fr;
+  }
+
+  .swap {
+    width: 100%;
+  }
+
+  .flight-top {
+    grid-template-columns: 1fr;
+  }
+
+  .times {
+    flex-direction: column;
+  }
+
+  .line {
+    width: 100%;
+  }
+}
