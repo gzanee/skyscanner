@@ -52,23 +52,65 @@
             <input type="number" id="max-price" value="100" min="0" />
           </div>
 
-          <div class="field inline">
-            <label for="min-hour">Partenza dalle ore</label>
-            <input type="number" id="min-hour" value="18" min="0" max="23" />
-          </div>
-
           <div class="field inline checkbox">
             <input type="checkbox" id="direct-only" />
             <label for="direct-only">Solo voli diretti</label>
           </div>
-
-          <div class="field inline checkbox">
-            <input type="checkbox" id="same-day" checked />
-            <label for="same-day">Arrivo stesso giorno</label>
-          </div>
         </div>
-      </form>
-    </section>
+
+        <!-- SOTTOCATEGORIA ORARI -->
+        <div class="filters-subsection">
+          <h4 class="subsection-title">Orari</h4>
+          <div class="subsection-content">
+            <!-- Orario di partenza -->
+            <div class="time-slider-field">
+              <label>Orario di partenza</label>
+              <div class="time-slider-box">
+                <div class="time-range-slider" id="time-range-slider-departure">
+                  <div class="time-range-track"></div>
+                  <div class="time-range-selected"></div>
+                  <div class="time-range-thumb thumb-min" data-tooltip="00:00"></div>
+                  <div class="time-range-thumb thumb-max" data-tooltip="24:00"></div>
+                </div>
+                <div class="time-range-labels">
+                  <span class="time-label-min">00:00</span>
+                  <span class="time-label-max">24:00</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Orario di arrivo -->
+            <div class="time-slider-field">
+              <label>Orario di arrivo</label>
+              <div class="time-slider-box">
+                <div class="time-range-slider" id="time-range-slider-arrival">
+                  <div class="time-range-track"></div>
+                  <div class="time-range-selected"></div>
+                  <div class="time-range-thumb thumb-min" data-tooltip="00:00"></div>
+                  <div class="time-range-thumb thumb-max" data-tooltip="24:00"></div>
+                </div>
+                <div class="time-range-labels">
+                  <span class="time-label-min">00:00</span>
+                  <span class="time-label-max">24:00</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Checkbox spostato qui -->
+          <div class="subsection-options">
+            <div class="field inline checkbox">
+              <input type="checkbox" id="same-day" checked />
+              <label for="same-day">Arrivo stesso giorno</label>
+            </div>
+          </div>
+
+          <!-- Hidden inputs -->
+          <input type="hidden" id="min-hour" value="0" />
+          <input type="hidden" id="max-hour" value="24" />
+          <input type="hidden" id="min-arrival-hour" value="0" />
+          <input type="hidden" id="max-arrival-hour" value="24" />
+        </div>
 
     <section class="status">
       <div>

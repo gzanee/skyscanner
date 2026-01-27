@@ -15,6 +15,150 @@ const debounce = (fn, delay = 300) => {
   };
 };
 
+// Time Range Slider Class
+class TimeRangeSlider {
+  constructor(container, options = {}) {
+    this.container = container;
+    this.minValue = options.min || 0;
+    this.maxValue = options.max || 24;
+    this.step = options.step || 0.5; // 30 minute increments
+    this.currentMin = options.initialMin ?? this.minValue;
+    this.currentMax = options.initialMax ?? this.maxValue;
+
+    this.track = container.querySelector(".time-range-track");
+    this.selected = container.querySelector(".time-range-selected");
+    this.thumbMin = container.querySelector(".thumb-min");
+    this.thumbMax = container.querySelector(".thumb-max");
+
+    this.labelMin = container.parentElement.querySelector(".time-label-min");
+    this.labelMax = container.parentElement.querySelector(".time-label-max");
+
+    this.minInput = options.minInput;
+    this.maxInput = options.maxInput;
+
+    this.dragging = null;
+
+    this.init();
+  }
+
+  init() {
+    this.thumbMin.addEventListener("mousedown", (e) => this.startDrag(e, "min"));
+    this.thumbMax.addEventListener("mousedown", (e) => this.startDrag(e, "max"));
+    this.thumbMin.addEventListener("touchstart", (e) => this.startDrag(e, "min"), { passive: false });
+    this.thumbMax.addEventListener("touchstart", (e) => this.startDrag(e, "max"), { passive: false });
+
+    document.addEventListener("mousemove", (e) => this.onDrag(e));
+    document.addEventListener("mouseup", () => this.endDrag());
+    document.addEventListener("touchmove", (e) => this.onDrag(e), { passive: false });
+    document.addEventListener("touchend", () => this.endDrag());
+
+    // Click on track to move nearest thumb
+    this.container.addEventListener("click", (e) => this.onTrackClick(e));
+
+    this.update();
+  }
+
+  startDrag(e, type) {
+    e.preventDefault();
+    this.dragging = type;
+    const thumb = type === "min" ? this.thumbMin : this.thumbMax;
+    thumb.classList.add("dragging");
+  }
+
+  endDrag() {
+    if (this.dragging) {
+      const thumb = this.dragging === "min" ? this.thumbMin : this.thumbMax;
+      thumb.classList.remove("dragging");
+      this.dragging = null;
+    }
+  }
+
+  onDrag(e) {
+    if (!this.dragging) return;
+    e.preventDefault();
+
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const rect = this.container.getBoundingClientRect();
+    const percent = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    const rawValue = this.minValue + percent * (this.maxValue - this.minValue);
+    const value = Math.round(rawValue / this.step) * this.step;
+
+    if (this.dragging === "min") {
+      this.currentMin = Math.min(value, this.currentMax - this.step);
+      this.currentMin = Math.max(this.minValue, this.currentMin);
+    } else {
+      this.currentMax = Math.max(value, this.currentMin + this.step);
+      this.currentMax = Math.min(this.maxValue, this.currentMax);
+    }
+
+    this.update();
+  }
+
+  onTrackClick(e) {
+    if (this.dragging) return;
+    if (e.target.classList.contains("time-range-thumb")) return;
+
+    const rect = this.container.getBoundingClientRect();
+    const percent = (e.clientX - rect.left) / rect.width;
+    const rawValue = this.minValue + percent * (this.maxValue - this.minValue);
+    const value = Math.round(rawValue / this.step) * this.step;
+
+    const distToMin = Math.abs(value - this.currentMin);
+    const distToMax = Math.abs(value - this.currentMax);
+
+    if (distToMin <= distToMax && value < this.currentMax) {
+      this.currentMin = Math.max(this.minValue, value);
+    } else if (value > this.currentMin) {
+      this.currentMax = Math.min(this.maxValue, value);
+    }
+
+    this.update();
+  }
+
+  update() {
+    const range = this.maxValue - this.minValue;
+    const minPercent = ((this.currentMin - this.minValue) / range) * 100;
+    const maxPercent = ((this.currentMax - this.minValue) / range) * 100;
+
+    this.thumbMin.style.left = `${minPercent}%`;
+    this.thumbMax.style.left = `${maxPercent}%`;
+
+    this.selected.style.left = `${minPercent}%`;
+    this.selected.style.width = `${maxPercent - minPercent}%`;
+
+    const minTime = this.formatTime(this.currentMin);
+    const maxTime = this.formatTime(this.currentMax);
+
+    this.labelMin.textContent = minTime;
+    this.labelMax.textContent = maxTime;
+
+    this.thumbMin.setAttribute("data-tooltip", minTime);
+    this.thumbMax.setAttribute("data-tooltip", maxTime);
+
+    if (this.minInput) {
+      this.minInput.value = Math.floor(this.currentMin);
+    }
+    if (this.maxInput) {
+      this.maxInput.value = Math.ceil(this.currentMax);
+    }
+  }
+
+  formatTime(value) {
+    const hours = Math.floor(value);
+    const minutes = Math.round((value - hours) * 60);
+    return `${hours.toString().padStart(2, "0")}:${minutes.toString().padStart(2, "0")}`;
+  }
+
+  getValues() {
+    return {
+      min: this.currentMin,
+      max: this.currentMax,
+      minHour: Math.floor(this.currentMin),
+      maxHour: Math.ceil(this.currentMax),
+    };
+  }
+}
+
 class AirportSelector {
   constructor(container, options = {}) {
     this.container = container;
@@ -373,10 +517,38 @@ const init = () => {
     originSelector.swapWith(destSelector);
   });
 
+  // Initialize Time Range Sliders
+  const departureSlider = new TimeRangeSlider(
+    document.getElementById("time-range-slider-departure"),
+    {
+      min: 0,
+      max: 24,
+      step: 0.25,  // 15 minuti
+      initialMin: 0,
+      initialMax: 24,
+      minInput: document.getElementById("min-hour"),
+      maxInput: document.getElementById("max-hour"),
+    }
+  );
+
+  const arrivalSlider = new TimeRangeSlider(
+    document.getElementById("time-range-slider-arrival"),
+    {
+      min: 0,
+      max: 24,
+      step: 0.25,  // 15 minuti
+      initialMin: 0,
+      initialMax: 24,
+      minInput: document.getElementById("min-arrival-hour"),
+      maxInput: document.getElementById("max-arrival-hour"),
+    }
+  );
+
   const form = document.getElementById("search-form");
   const departDateInput = document.getElementById("depart-date");
   const maxPriceInput = document.getElementById("max-price");
   const minHourInput = document.getElementById("min-hour");
+  const maxHourInput = document.getElementById("max-hour");
   const directOnlyInput = document.getElementById("direct-only");
   const sameDayInput = document.getElementById("same-day");
   const statusTitle = document.getElementById("status-title");
@@ -449,13 +621,20 @@ const init = () => {
     const formattedDate = departDateInput.value
       ? departDateInput.value.split("-").reverse().join("/")
       : "";
+    
+    const departureValues = departureSlider.getValues();
+    const arrivalValues = arrivalSlider.getValues();
+    
     const payload = {
       origins,
       destinations,
       search_everywhere: destSelector.hasEverywhere() || destinations.length === 0,
       depart_date: formattedDate,
       max_price: maxPriceInput.value,
-      min_hour: minHourInput.value,
+      min_hour: departureValues.minHour,
+      max_hour: departureValues.maxHour,
+      min_arrival_hour: arrivalValues.minHour,
+      max_arrival_hour: arrivalValues.maxHour,
       direct_only: directOnlyInput.checked,
       same_day: sameDayInput.checked,
       sort: getSortValue(),
