@@ -20,6 +20,107 @@ def airport_from_code(scanner: SkyScanner, code: str) -> Airport:
     return scanner.get_airport_by_code(code)
 
 
+def normalize_selected_locations(items):
+    normalized = []
+    for item in items or []:
+        if isinstance(item, str):
+            normalized.append({"code": item, "entity_type": "", "title": ""})
+            continue
+        if isinstance(item, dict):
+            code = item.get("code") or item.get("skyId")
+            if not code:
+                continue
+            entity_type = item.get("entityType") or item.get("entity_type") or ""
+            title = item.get("title") or item.get("label") or ""
+            normalized.append(
+                {"code": code, "entity_type": entity_type, "title": title}
+            )
+    return normalized
+
+
+def dedupe_codes(items):
+    seen = set()
+    codes = []
+    for item in items:
+        code = item.get("code")
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        codes.append(code)
+    return codes
+
+
+def extract_country_places(hierarchy, country_code):
+    matches = {}
+
+    def walk(node, current_country=None):
+        if isinstance(node, dict):
+            place_type = (
+                node.get("placeType")
+                or node.get("place_type")
+                or node.get("type")
+                or ""
+            )
+            sky_code = node.get("skyCode") or node.get("skyId") or node.get("id")
+            name = node.get("name") or node.get("title") or node.get("placeName")
+            country_id = (
+                node.get("countryId") or node.get("countryCode") or node.get("country")
+            )
+
+            if "COUNTRY" in place_type and sky_code == country_code:
+                current_country = country_code
+
+            normalized_type = None
+            if "CITY" in place_type:
+                normalized_type = "CITY"
+            elif "AIRPORT" in place_type:
+                normalized_type = "AIRPORT"
+
+            if normalized_type and sky_code:
+                if country_id == country_code or current_country == country_code:
+                    matches[sky_code] = {
+                        "skyCode": sky_code,
+                        "name": name or sky_code,
+                        "type": normalized_type,
+                    }
+
+            for value in node.values():
+                if isinstance(value, (dict, list)):
+                    walk(value, current_country)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, current_country)
+
+    walk(hierarchy)
+    return list(matches.values())
+
+
+def get_country_places(scanner: SkyScanner, country_code: str, country_name: str):
+    try:
+        hierarchy = scanner.get_flight_geo_hierarchy()
+        places = extract_country_places(hierarchy, country_code)
+        if places:
+            return places
+    except GenericError:
+        pass
+
+    query = country_name or country_code
+    results = scanner.search_airports(query)
+    return [
+        {
+            "skyCode": airport.skyId,
+            "name": airport.title,
+            "type": airport.entity_type,
+        }
+        for airport in results
+        if airport.entity_type in {"CITY", "AIRPORT"}
+        and (
+            not country_name
+            or country_name.lower() in (airport.subtitle or "").lower()
+        )
+    ]
+
+
 def process_flight_response(
     flight_response,
     origin: Airport,
@@ -319,8 +420,10 @@ def api_airports():
 def api_search():
     payload = request.get_json(silent=True) or {}
 
-    origin_codes = payload.get("origins", [])
-    dest_codes = payload.get("destinations", [])
+    origin_items = normalize_selected_locations(payload.get("origins", []))
+    dest_items = normalize_selected_locations(payload.get("destinations", []))
+    origin_codes = dedupe_codes(origin_items)
+    dest_codes = dedupe_codes(dest_items)
     search_everywhere = payload.get("search_everywhere", False) or (
         "EVERYWHERE" in dest_codes or not dest_codes
     )
@@ -352,6 +455,39 @@ def api_search():
         origin_list = [airport_from_code(scanner, code) for code in origin_codes]
     except GenericError as exc:
         return jsonify({"error": str(exc)}), 400
+
+    if not search_everywhere:
+        country_items = [
+            item for item in dest_items if item["entity_type"] == "COUNTRY"
+        ]
+        if country_items:
+            expanded = []
+            for item in country_items:
+                expanded.extend(
+                    get_country_places(
+                        scanner, item["code"], item.get("title", "")
+                    )
+                )
+
+            expanded_items = [
+                {"code": place["skyCode"], "entity_type": place["type"]}
+                for place in expanded
+                if place.get("skyCode")
+            ]
+            dest_items = [
+                item for item in dest_items if item["entity_type"] != "COUNTRY"
+            ] + expanded_items
+            dest_codes = dedupe_codes(dest_items)
+
+        if not dest_codes:
+            return (
+                jsonify(
+                    {
+                        "error": "Nessuna destinazione valida trovata per il paese selezionato.",
+                    }
+                ),
+                400,
+            )
 
     if search_everywhere:
         flights, stats = search_everywhere_multi(

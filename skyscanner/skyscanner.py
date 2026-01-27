@@ -319,6 +319,34 @@ class SkyScanner:
         ]
 
     @typechecked
+    def get_flight_geo_hierarchy(self) -> dict:
+        """
+        Retrieve the flight geo hierarchy (countries -> cities -> airports).
+
+        Returns:
+            dict: Parsed JSON response containing the hierarchy.
+
+        Raises:
+            BannedWithCaptcha: If API responds with a CAPTCHA ban (403).
+            GenericError: For non-200 status codes.
+        """
+        url = config.GEO_HIERARCHY_ENDPOINT.format(
+            market=self.market, locale=self.locale
+        )
+        req = self.session.get(url)
+        if req.status_code == 403:
+            raise BannedWithCaptcha(
+                "https://www.skyscanner.net" + req.json().get("redirect_to", "")
+            )
+
+        if req.status_code != 200:
+            raise GenericError(
+                f"Error when fetching geo hierarchy, code: {req.status_code} text: {req.text}"
+            )
+
+        return req.json()
+
+    @typechecked
     def get_airport_by_code(self, airport_code: str) -> Airport:
         """
         Retrieve a single Airport by its IATA code.

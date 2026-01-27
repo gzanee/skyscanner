@@ -30,6 +30,7 @@ SEARCH_ORIGIN_ENDPOINT = "https://www.skyscanner.net/g/fenryr/v1/inputorigin"
 ITINERARY_DETAILS_ENDPOINT = 'https://www.skyscanner.net/g/sonar/v3/itinerary/details'
 LOCATION_SEARCH_ENDPOINT = 'https://www.skyscanner.net/g/autosuggest-search/api/v1/search-car/{market}/{locale}/'
 CAR_RENTAL_ENDPOINT = 'https://www.skyscanner.net/g/carhire-quotes/{market}/{locale}/{currency}/{driver_age}/{first_location}/{second_location}/{first_date}/{second_date}'
+GEO_HIERARCHY_ENDPOINT = "https://www.skyscanner.net/g/geo/hierarchy/flights/{market}/{locale}"
 
 
 

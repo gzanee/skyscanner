@@ -1,0 +1,832 @@
+diff --git a/app.py b/app.py
+index c6cca15f1faeeb671de3681ed8728754155b0a27..1b399b48923ab5b12df5da5c2195f7d70bf30b95 100644
+--- a/app.py
++++ b/app.py
+@@ -1,47 +1,148 @@
+ import datetime
+ from flask import Flask, jsonify, render_template, request
+ from skyscanner import SkyScanner
+ from skyscanner.errors import GenericError
+ from skyscanner.types import Airport, SpecialTypes
+ 
+ 
+ app = Flask(__name__)
+ 
+ 
+ def build_scanner() -> SkyScanner:
+     return SkyScanner(locale="it-IT", currency="EUR", market="IT")
+ 
+ 
+ def parse_date(date_str: str) -> datetime.datetime:
+     return datetime.datetime.strptime(date_str, "%d/%m/%Y")
+ 
+ 
+ def airport_from_code(scanner: SkyScanner, code: str) -> Airport:
+     return scanner.get_airport_by_code(code)
+ 
+ 
++def normalize_selected_locations(items):
++    normalized = []
++    for item in items or []:
++        if isinstance(item, str):
++            normalized.append({"code": item, "entity_type": "", "title": ""})
++            continue
++        if isinstance(item, dict):
++            code = item.get("code") or item.get("skyId")
++            if not code:
++                continue
++            entity_type = item.get("entityType") or item.get("entity_type") or ""
++            title = item.get("title") or item.get("label") or ""
++            normalized.append(
++                {"code": code, "entity_type": entity_type, "title": title}
++            )
++    return normalized
++
++
++def dedupe_codes(items):
++    seen = set()
++    codes = []
++    for item in items:
++        code = item.get("code")
++        if not code or code in seen:
++            continue
++        seen.add(code)
++        codes.append(code)
++    return codes
++
++
++def extract_country_places(hierarchy, country_code):
++    matches = {}
++
++    def walk(node, current_country=None):
++        if isinstance(node, dict):
++            place_type = (
++                node.get("placeType")
++                or node.get("place_type")
++                or node.get("type")
++                or ""
++            )
++            sky_code = node.get("skyCode") or node.get("skyId") or node.get("id")
++            name = node.get("name") or node.get("title") or node.get("placeName")
++            country_id = (
++                node.get("countryId") or node.get("countryCode") or node.get("country")
++            )
++
++            if "COUNTRY" in place_type and sky_code == country_code:
++                current_country = country_code
++
++            normalized_type = None
++            if "CITY" in place_type:
++                normalized_type = "CITY"
++            elif "AIRPORT" in place_type:
++                normalized_type = "AIRPORT"
++
++            if normalized_type and sky_code:
++                if country_id == country_code or current_country == country_code:
++                    matches[sky_code] = {
++                        "skyCode": sky_code,
++                        "name": name or sky_code,
++                        "type": normalized_type,
++                    }
++
++            for value in node.values():
++                if isinstance(value, (dict, list)):
++                    walk(value, current_country)
++        elif isinstance(node, list):
++            for item in node:
++                walk(item, current_country)
++
++    walk(hierarchy)
++    return list(matches.values())
++
++
++def get_country_places(scanner: SkyScanner, country_code: str, country_name: str):
++    try:
++        hierarchy = scanner.get_flight_geo_hierarchy()
++        places = extract_country_places(hierarchy, country_code)
++        if places:
++            return places
++    except GenericError:
++        pass
++
++    query = country_name or country_code
++    results = scanner.search_airports(query)
++    return [
++        {
++            "skyCode": airport.skyId,
++            "name": airport.title,
++            "type": airport.entity_type,
++        }
++        for airport in results
++        if airport.entity_type in {"CITY", "AIRPORT"}
++        and (
++            not country_name
++            or country_name.lower() in (airport.subtitle or "").lower()
++        )
++    ]
++
++
+ def process_flight_response(
+     flight_response,
+     origin: Airport,
+     city,
+     depart_date,
+     max_price,
+     min_hour,
+     direct_only,
+     same_day,
+     voli_trovati,
+     voli_keys,
+ ):
+     voli_visti = set()
+     for bucket in flight_response.json.get("itineraries", {}).get("buckets", []):
+         for item in bucket.get("items", []):
+             if item["id"] in voli_visti:
+                 continue
+             voli_visti.add(item["id"])
+ 
+             price = item.get("price", {}).get("raw", 999999)
+             if price > max_price:
+                 continue
+ 
+             leg = item.get("legs", [{}])[0]
+             dep_str = leg.get("departure", "")
+@@ -297,84 +398,119 @@ def index():
+ def api_airports():
+     query = request.args.get("query", "").strip()
+     if len(query) < 2:
+         return jsonify([])
+ 
+     scanner = build_scanner()
+     results = scanner.search_airports(query)
+ 
+     return jsonify(
+         [
+             {
+                 "title": airport.title,
+                 "subtitle": airport.subtitle,
+                 "skyId": airport.skyId,
+                 "entityType": airport.entity_type,
+             }
+             for airport in results[:8]
+         ]
+     )
+ 
+ 
+ @app.route("/api/search", methods=["POST"])
+ def api_search():
+     payload = request.get_json(silent=True) or {}
+ 
+-    origin_codes = payload.get("origins", [])
+-    dest_codes = payload.get("destinations", [])
++    origin_items = normalize_selected_locations(payload.get("origins", []))
++    dest_items = normalize_selected_locations(payload.get("destinations", []))
++    origin_codes = dedupe_codes(origin_items)
++    dest_codes = dedupe_codes(dest_items)
+     search_everywhere = payload.get("search_everywhere", False) or (
+         "EVERYWHERE" in dest_codes or not dest_codes
+     )
+ 
+     if not origin_codes:
+         return jsonify({"error": "Seleziona almeno un aeroporto di partenza."}), 400
+ 
+     try:
+         depart_date = parse_date(payload.get("depart_date", ""))
+         max_price = float(payload.get("max_price", 0))
+         min_hour = int(payload.get("min_hour", 0))
+     except (TypeError, ValueError):
+         return (
+             jsonify(
+                 {
+                     "error": "Controlla i valori inseriti. Formato data: GG/MM/AAAA.",
+                 }
+             ),
+             400,
+         )
+ 
+     direct_only = bool(payload.get("direct_only"))
+     same_day = bool(payload.get("same_day", True))
+     sort_key = payload.get("sort", "prezzo")
+ 
+     scanner = build_scanner()
+ 
+     try:
+         origin_list = [airport_from_code(scanner, code) for code in origin_codes]
+     except GenericError as exc:
+         return jsonify({"error": str(exc)}), 400
+ 
++    if not search_everywhere:
++        country_items = [
++            item for item in dest_items if item["entity_type"] == "COUNTRY"
++        ]
++        if country_items:
++            expanded = []
++            for item in country_items:
++                expanded.extend(
++                    get_country_places(
++                        scanner, item["code"], item.get("title", "")
++                    )
++                )
++
++            expanded_items = [
++                {"code": place["skyCode"], "entity_type": place["type"]}
++                for place in expanded
++                if place.get("skyCode")
++            ]
++            dest_items = [
++                item for item in dest_items if item["entity_type"] != "COUNTRY"
++            ] + expanded_items
++            dest_codes = dedupe_codes(dest_items)
++
++        if not dest_codes:
++            return (
++                jsonify(
++                    {
++                        "error": "Nessuna destinazione valida trovata per il paese selezionato.",
++                    }
++                ),
++                400,
++            )
++
+     if search_everywhere:
+         flights, stats = search_everywhere_multi(
+             scanner,
+             origin_list,
+             depart_date,
+             max_price,
+             min_hour,
+             direct_only,
+             same_day,
+         )
+     else:
+         try:
+             dest_list = [airport_from_code(scanner, code) for code in dest_codes]
+         except GenericError as exc:
+             return jsonify({"error": str(exc)}), 400
+ 
+         flights, stats = search_specific_destinations(
+             scanner,
+             origin_list,
+             dest_list,
+             depart_date,
+             max_price,
+             min_hour,
+             direct_only,
+             same_day,
+diff --git a/skyscanner/config.py b/skyscanner/config.py
+index 6a93e99fad38ee6e378020844eb8418aaf1e2622..47ea28f508055f82eef9da73916bbe3133bd9ac4 100644
+--- a/skyscanner/config.py
++++ b/skyscanner/config.py
+@@ -8,31 +8,32 @@ MODULE_DIR = Path(__file__).parent
+ JA3 = '771,4865-4866-4867-49195-49196-52393-49199-49200-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-51-45-43-21,29-23-24,0'
+ 
+ AKAMAI = "4:16777216|16711681|0|m,p,a,s"
+ 
+ EXTRA_FP = {
+     "tls_signature_algorithms": [
+         "ecdsa_secp256r1_sha256",
+         "rsa_pss_rsae_sha256",
+         "rsa_pkcs1_sha256",
+         "ecdsa_secp384r1_sha384",
+         "rsa_pss_rsae_sha384",
+         "rsa_pkcs1_sha384",
+         "rsa_pss_rsae_sha512",
+         "rsa_pkcs1_sha512",
+         "rsa_pkcs1_sha1"
+     ]
+ }
+ 
+ #Endpoints
+ 
+ UNIFIED_SEARCH_ENDPOINT = "https://www.skyscanner.net/g/radar/api/v2/unified-search/"
+ SEARCH_ORIGIN_ENDPOINT = "https://www.skyscanner.net/g/fenryr/v1/inputorigin"
+ ITINERARY_DETAILS_ENDPOINT = 'https://www.skyscanner.net/g/sonar/v3/itinerary/details'
+ LOCATION_SEARCH_ENDPOINT = 'https://www.skyscanner.net/g/autosuggest-search/api/v1/search-car/{market}/{locale}/'
+ CAR_RENTAL_ENDPOINT = 'https://www.skyscanner.net/g/carhire-quotes/{market}/{locale}/{currency}/{driver_age}/{first_location}/{second_location}/{first_date}/{second_date}'
++GEO_HIERARCHY_ENDPOINT = "https://www.skyscanner.net/g/geo/hierarchy/flights/{market}/{locale}"
+ 
+ 
+ 
+ PX_DEVICE_DATA_DIR = MODULE_DIR / "devicedata.json"
+ 
+-__author__ = "@irrisolto on discord"
+\ No newline at end of file
++__author__ = "@irrisolto on discord"
+diff --git a/skyscanner/skyscanner.py b/skyscanner/skyscanner.py
+index 6d4ade9973f6de0d4638ed450833774806f8a392..86e999128e5f509c6e25eeda2ce4261986a19660 100644
+--- a/skyscanner/skyscanner.py
++++ b/skyscanner/skyscanner.py
+@@ -296,50 +296,78 @@ class SkyScanner:
+             config.LOCATION_SEARCH_ENDPOINT.format(
+                 locale=self.locale, market=self.market
+             )
+             + query
+         )
+         params = {"autosuggestExp": "neighborhood_b"}
+ 
+         req = self.session.get(url, params=params)
+         if req.status_code == 403:
+             raise BannedWithCaptcha(
+                 "https://www.skyscanner.net" + req.json()["redirect_to"]
+             )
+ 
+         if req.status_code != 200:
+             raise GenericError(
+                 f"Error when scraping airports, code: {req.status_code} text: {req.text}"
+             )
+ 
+         return [
+             Location(
+                 location["entity_name"], location["entity_id"], location["location"]
+             )
+             for location in req.json()
+         ]
+ 
++    @typechecked
++    def get_flight_geo_hierarchy(self) -> dict:
++        """
++        Retrieve the flight geo hierarchy (countries -> cities -> airports).
++
++        Returns:
++            dict: Parsed JSON response containing the hierarchy.
++
++        Raises:
++            BannedWithCaptcha: If API responds with a CAPTCHA ban (403).
++            GenericError: For non-200 status codes.
++        """
++        url = config.GEO_HIERARCHY_ENDPOINT.format(
++            market=self.market, locale=self.locale
++        )
++        req = self.session.get(url)
++        if req.status_code == 403:
++            raise BannedWithCaptcha(
++                "https://www.skyscanner.net" + req.json().get("redirect_to", "")
++            )
++
++        if req.status_code != 200:
++            raise GenericError(
++                f"Error when fetching geo hierarchy, code: {req.status_code} text: {req.text}"
++            )
++
++        return req.json()
++
+     @typechecked
+     def get_airport_by_code(self, airport_code: str) -> Airport:
+         """
+         Retrieve a single Airport by its IATA code.
+ 
+         Args:
+             airport_code (str): Three-letter IATA code to look up.
+ 
+         Returns:
+             Airport: Matching Airport object.
+ 
+         Raises:
+             GenericError: If no airport matches the given code.
+         """
+         airports = self.search_airports(airport_code)
+         for airport in airports:
+             if airport.skyId == airport_code:
+                 return airport
+         raise GenericError(f"IATA code not found: {airport_code}")
+ 
+     @typechecked
+     def get_itinerary_details(
+         self, itineraryId: str, response: SkyscannerResponse
+     ) -> dict:
+         """
+@@ -624,26 +652,26 @@ class SkyScanner:
+         Returns:
+             dict: Formatted leg with dates, origin/destination entities, and placeOfStay.
+         """
+         res = {}
+         date = depart_date if depart_date else return_date
+         res["dates"] = (
+             {"@type": "date", "year": date.year, "month": date.month, "day": date.day}
+             if isinstance(date, datetime.datetime)
+             else {"@type": date.value}
+         )
+         res["legOrigin"] = (
+             {"@type": "entity", "entityId": origin.entity_id}
+             if isinstance(origin, Airport)
+             else {"@type": origin.value}
+         )
+         res["legDestination"] = (
+             {"@type": "entity", "entityId": destination.entity_id}
+             if isinstance(destination, Airport)
+             else {"@type": destination.value}
+         )
+         res["placeOfStay"] = (
+             destination.entity_id
+             if isinstance(destination, Airport)
+             else origin.entity_id
+         )
+-        return res
+\ No newline at end of file
++        return res
+diff --git a/static/app.js b/static/app.js
+index fb57d845f5b70fcb43b7a46578eb508bc96e8389..17f77940a1bae2353e4c25e63472ff1e62bb6c25 100644
+--- a/static/app.js
++++ b/static/app.js
+@@ -47,138 +47,159 @@ class AirportSelector {
+     const query = event.target.value.trim();
+     if (query.length < 2) {
+       this.hideDropdown();
+       return;
+     }
+ 
+     const response = await fetch(`${API_AIRPORTS}?query=${encodeURIComponent(query)}`);
+     if (!response.ok) {
+       this.results = [];
+       this.hideDropdown();
+       return;
+     }
+ 
+     this.results = await response.json();
+     this.renderDropdown();
+   }
+ 
+   renderDropdown() {
+     this.dropdown.innerHTML = "";
+ 
+     if (this.allowEverywhere && this.selected.length === 0) {
+       const li = createElement("li");
+       li.textContent = "🌍 Ovunque (cerca in tutto il mondo)";
+       li.addEventListener("click", () => {
+         this.selected = [];
+-        this.addTag({ code: "EVERYWHERE", label: "Ovunque" });
++        this.addTag({
++          code: "EVERYWHERE",
++          label: "Ovunque",
++          title: "Ovunque",
++          entityType: "SPECIAL",
++        });
+         this.input.value = "";
+         this.hideDropdown();
+       });
+       this.dropdown.appendChild(li);
+     }
+ 
+     this.results.forEach((airport) => {
+       const li = createElement("li");
+       const icon = this.getEntityIcon(airport.entityType);
+       const title = `${icon} ${airport.title} (${airport.skyId})`;
+       const meta = airport.subtitle ? ` - ${airport.subtitle}` : "";
+       li.innerHTML = `<span>${title}</span><span class="meta">${meta}</span>`;
+       li.addEventListener("click", () => {
+         this.addTag({
+           code: airport.skyId,
+           label: airport.skyId,
+           title: airport.title,
++          entityType: airport.entityType,
+         });
+         this.input.value = "";
+         this.hideDropdown();
+       });
+       this.dropdown.appendChild(li);
+     });
+ 
+     if (this.dropdown.children.length) {
+       this.showDropdown();
+     } else {
+       this.hideDropdown();
+     }
+   }
+ 
+   getEntityIcon(type) {
+     const icons = {
+       AIRPORT: "✈️",
+       CITY: "🏙️",
+       COUNTRY: "🌍",
+     };
+     return icons[type] || "📍";
+   }
+ 
+   showDropdown() {
+     this.dropdown.classList.add("show");
+   }
+ 
+   hideDropdown() {
+     this.dropdown.classList.remove("show");
+   }
+ 
+-  addTag({ code, label, title }) {
++  addTag({ code, label, title, entityType }) {
+     if (code === "EVERYWHERE") {
+-      this.selected = [{ code, label: "Ovunque", title: "Ovunque" }];
++      this.selected = [
++        { code, label: "Ovunque", title: "Ovunque", entityType: "SPECIAL" },
++      ];
+       this.renderTags();
+       return;
+     }
+ 
+     if (this.selected.some((item) => item.code === code)) {
+       return;
+     }
+ 
+     this.selected = this.selected.filter((item) => item.code !== "EVERYWHERE");
+-    this.selected.push({ code, label: label || code, title: title || label || code });
++    this.selected.push({
++      code,
++      label: label || code,
++      title: title || label || code,
++      entityType: entityType || "",
++    });
+     this.renderTags();
+   }
+ 
+   removeTag(code) {
+     this.selected = this.selected.filter((item) => item.code !== code);
+     this.renderTags();
+   }
+ 
+   renderTags() {
+     this.tagsEl.innerHTML = "";
+     this.selected.forEach((item) => {
+       const tag = createElement("span", "tag");
+       tag.textContent = item.label;
+       const button = createElement("button");
+       button.type = "button";
+       button.textContent = "×";
+       button.addEventListener("click", () => this.removeTag(item.code));
+       tag.appendChild(button);
+       this.tagsEl.appendChild(tag);
+     });
+   }
+ 
+   getCodes() {
+     return this.selected.map((item) => item.code);
+   }
+ 
++  getItems() {
++    return this.selected.map((item) => ({
++      code: item.code,
++      entityType: item.entityType || "",
++      title: item.title || item.label || item.code,
++    }));
++  }
++
+   hasEverywhere() {
+     return this.selected.some((item) => item.code === "EVERYWHERE");
+   }
+ 
+   swapWith(other) {
+     if (other.hasEverywhere()) {
+       return;
+     }
+     const temp = [...this.selected];
+     this.selected = [...other.selected];
+     other.selected = temp;
+     this.renderTags();
+     other.renderTags();
+   }
+ }
+ 
+ const formatStats = (stats) => {
+   if (!stats) return "";
+   const parts = [];
+   if (stats.paesi !== undefined) {
+     parts.push(`Paesi: ${stats.paesi}`);
+   }
+   if (stats.città !== undefined) {
+     parts.push(`Città: ${stats.città}`);
+   }
+@@ -252,156 +273,234 @@ const renderFlights = (flights, container) => {
+     duration.innerHTML = `<div class="stops">${flight.durata}</div><div class="line"></div><div class="stops">${flight.scali === 0 ? "Diretto" : `${flight.scali} scalo`}</div>`;
+     const arr = createElement("div", "time-block");
+     arr.innerHTML = `<strong>${flight.arrivo}</strong><span>${flight.codice_dest}</span>`;
+     times.append(dep, duration, arr);
+ 
+     const price = createElement("div", "price");
+     price.innerHTML = `<strong>€ ${Math.round(flight.prezzo)}</strong><span>${flight.città} ${flight.paese}</span>`;
+ 
+     top.append(airline, times, price);
+     card.appendChild(top);
+ 
+     if (flight.stopovers && flight.stopovers.length) {
+       const stopovers = createElement("div", "stopovers");
+       flight.stopovers.forEach((stop) => {
+         const line = createElement("span");
+         line.innerHTML = `<span class="icon">✈</span>Scalo a ${stop.città}${stop.codice ? ` (${stop.codice})` : ""}: arrivo ${stop.arrivo}${stop.partenza ? ` → ripartenza ${stop.partenza}` : ""}${stop.attesa ? ` (attesa ${stop.attesa})` : ""}`;
+         stopovers.appendChild(line);
+       });
+       card.appendChild(stopovers);
+     }
+ 
+     container.appendChild(card);
+   });
+ };
+ 
++const describeSelection = (items, fallback) => {
++  if (!items.length) return fallback;
++  return items.map((item) => item.title || item.code).join(", ");
++};
++
++const buildSearchMessages = (origins, destinations) => {
++  const hasEverywhere = destinations.some((item) => item.code === "EVERYWHERE");
++  const countries = destinations.filter((item) => item.entityType === "COUNTRY");
++  const airports = destinations.filter(
++    (item) => item.entityType === "AIRPORT" || item.entityType === "CITY"
++  );
++  const originLabel = describeSelection(origins, "partenze selezionate");
++  const destinationLabel = hasEverywhere
++    ? "tutto il mondo"
++    : describeSelection(destinations, "destinazioni selezionate");
++  const countryLabel = countries.length
++    ? describeSelection(countries, "paese selezionato")
++    : "";
++  const airportLabel = airports.length
++    ? describeSelection(airports, "destinazioni selezionate")
++    : "";
++
++  const messages = [
++    `Sto cercando voli da ${originLabel} verso ${destinationLabel}...`,
++  ];
++
++  if (countries.length) {
++    messages.push(
++      `Sto espandendo il paese ${countryLabel} in città e aeroporti...`
++    );
++  }
++
++  if (airports.length && !hasEverywhere) {
++    messages.push(`Sto interrogando ${airportLabel}...`);
++  } else if (!hasEverywhere) {
++    messages.push("Sto interrogando le destinazioni selezionate...");
++  }
++
++  messages.push("Quasi fatto, sto ordinando i risultati...");
++  return messages;
++};
++
++const startStatusRotation = (statusTitle, statusSubtitle, messages) => {
++  let index = 0;
++  const startedAt = Date.now();
++
++  statusTitle.textContent = messages[index] || "Ricerca in corso...";
++  statusSubtitle.textContent = "In corso da 0s";
++
++  const intervalId = setInterval(() => {
++    index = (index + 1) % messages.length;
++    const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
++    statusTitle.textContent = messages[index];
++    statusSubtitle.textContent = `In corso da ${elapsedSeconds}s`;
++  }, 1800);
++
++  return () => clearInterval(intervalId);
++};
++
+ const init = () => {
+   const originSelector = new AirportSelector(
+     document.getElementById("origin-selector"),
+     {
+       allowEverywhere: false,
+       defaults: [{ code: "VCE", label: "VCE", title: "Venezia" }],
+     }
+   );
+ 
+   const destSelector = new AirportSelector(document.getElementById("dest-selector"), {
+     allowEverywhere: true,
+     defaults: [{ code: "EVERYWHERE", label: "Ovunque", title: "Ovunque" }],
+   });
+ 
+   const swapBtn = document.getElementById("swap-btn");
+   swapBtn.addEventListener("click", () => {
+     originSelector.swapWith(destSelector);
+   });
+ 
+   const form = document.getElementById("search-form");
+   const departDateInput = document.getElementById("depart-date");
+   const maxPriceInput = document.getElementById("max-price");
+   const minHourInput = document.getElementById("min-hour");
+   const directOnlyInput = document.getElementById("direct-only");
+   const sameDayInput = document.getElementById("same-day");
+   const statusTitle = document.getElementById("status-title");
+   const statusSubtitle = document.getElementById("status-subtitle");
+   const statsEl = document.getElementById("stats");
+   const resultsEl = document.getElementById("results");
+   const searchBtn = document.getElementById("search-btn");
+ 
+   const setDefaultDate = () => {
+     const date = new Date();
+     date.setDate(date.getDate() + 30);
+     const day = String(date.getDate()).padStart(2, "0");
+     const month = String(date.getMonth() + 1).padStart(2, "0");
+     const year = date.getFullYear();
+     departDateInput.value = `${year}-${month}-${day}`;
+   };
+   setDefaultDate();
+ 
+   let lastFlights = [];
++  let stopStatusRotation = null;
+ 
+   const getSortValue = () => {
+     const selected = document.querySelector("input[name='sort']:checked");
+     return selected ? selected.value : "prezzo";
+   };
+ 
+   const sortFlights = (flights, sortValue) => {
+     const copy = [...flights];
+     if (sortValue === "orario") {
+       return copy.sort((a, b) => a.partenza.localeCompare(b.partenza));
+     }
+     if (sortValue === "durata") {
+       return copy.sort((a, b) => (a.durata_min || 0) - (b.durata_min || 0));
+     }
+     return copy.sort((a, b) => (a.prezzo || 0) - (b.prezzo || 0));
+   };
+ 
+   document.querySelectorAll("input[name='sort']").forEach((radio) => {
+     radio.addEventListener("change", () => {
+       const sorted = sortFlights(lastFlights, getSortValue());
+       renderFlights(sorted, resultsEl);
+     });
+   });
+ 
+   form.addEventListener("submit", async (event) => {
+     event.preventDefault();
+     statusSubtitle.textContent = "";
+     statsEl.textContent = "";
+     resultsEl.innerHTML = "";
+ 
+-    const origins = originSelector.getCodes();
+-    const destinations = destSelector.getCodes();
++    const origins = originSelector.getItems();
++    const destinations = destSelector.getItems();
+ 
+     if (!origins.length) {
+       statusTitle.textContent = "Seleziona almeno un aeroporto di partenza.";
+       return;
+     }
+ 
+     searchBtn.disabled = true;
+-    statusTitle.textContent = "Ricerca in corso...";
++    if (stopStatusRotation) {
++      stopStatusRotation();
++    }
++    const statusMessages = buildSearchMessages(origins, destinations);
++    stopStatusRotation = startStatusRotation(
++      statusTitle,
++      statusSubtitle,
++      statusMessages
++    );
+ 
+     const formattedDate = departDateInput.value
+       ? departDateInput.value.split("-").reverse().join("/")
+       : "";
+     const payload = {
+       origins,
+       destinations,
+       search_everywhere: destSelector.hasEverywhere() || destinations.length === 0,
+       depart_date: formattedDate,
+       max_price: maxPriceInput.value,
+       min_hour: minHourInput.value,
+       direct_only: directOnlyInput.checked,
+       same_day: sameDayInput.checked,
+       sort: getSortValue(),
+     };
+ 
+     try {
+       const response = await fetch(API_SEARCH, {
+         method: "POST",
+         headers: { "Content-Type": "application/json" },
+         body: JSON.stringify(payload),
+       });
+ 
+       const data = await response.json();
+ 
+       if (!response.ok) {
+         statusTitle.textContent = data.error || "Errore durante la ricerca.";
++        statusSubtitle.textContent = "";
+         searchBtn.disabled = false;
+         return;
+       }
+ 
++      if (stopStatusRotation) {
++        stopStatusRotation();
++        stopStatusRotation = null;
++      }
+       statusTitle.textContent = `Trovati ${data.count} voli`;
+       statusSubtitle.textContent = data.search_everywhere
+         ? "Risultati ovunque"
+         : "Risultati su destinazioni selezionate";
+       statsEl.textContent = formatStats(data.stats);
+ 
+       lastFlights = data.flights || [];
+       const sorted = sortFlights(lastFlights, getSortValue());
+       renderFlights(sorted, resultsEl);
+     } catch (error) {
+       statusTitle.textContent = "Errore durante la ricerca.";
++      statusSubtitle.textContent = "";
+     } finally {
+       searchBtn.disabled = false;
++      if (stopStatusRotation) {
++        stopStatusRotation();
++        stopStatusRotation = null;
++      }
+     }
+   });
+ };
+ 
+ window.addEventListener("DOMContentLoaded", init);

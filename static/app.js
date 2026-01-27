@@ -69,7 +69,12 @@ class AirportSelector {
       li.textContent = "🌍 Ovunque (cerca in tutto il mondo)";
       li.addEventListener("click", () => {
         this.selected = [];
-        this.addTag({ code: "EVERYWHERE", label: "Ovunque" });
+        this.addTag({
+          code: "EVERYWHERE",
+          label: "Ovunque",
+          title: "Ovunque",
+          entityType: "SPECIAL",
+        });
         this.input.value = "";
         this.hideDropdown();
       });
@@ -87,6 +92,7 @@ class AirportSelector {
           code: airport.skyId,
           label: airport.skyId,
           title: airport.title,
+          entityType: airport.entityType,
         });
         this.input.value = "";
         this.hideDropdown();
@@ -118,9 +124,11 @@ class AirportSelector {
     this.dropdown.classList.remove("show");
   }
 
-  addTag({ code, label, title }) {
+  addTag({ code, label, title, entityType }) {
     if (code === "EVERYWHERE") {
-      this.selected = [{ code, label: "Ovunque", title: "Ovunque" }];
+      this.selected = [
+        { code, label: "Ovunque", title: "Ovunque", entityType: "SPECIAL" },
+      ];
       this.renderTags();
       return;
     }
@@ -130,7 +138,12 @@ class AirportSelector {
     }
 
     this.selected = this.selected.filter((item) => item.code !== "EVERYWHERE");
-    this.selected.push({ code, label: label || code, title: title || label || code });
+    this.selected.push({
+      code,
+      label: label || code,
+      title: title || label || code,
+      entityType: entityType || "",
+    });
     this.renderTags();
   }
 
@@ -155,6 +168,14 @@ class AirportSelector {
 
   getCodes() {
     return this.selected.map((item) => item.code);
+  }
+
+  getItems() {
+    return this.selected.map((item) => ({
+      code: item.code,
+      entityType: item.entityType || "",
+      title: item.title || item.label || item.code,
+    }));
   }
 
   hasEverywhere() {
@@ -274,6 +295,65 @@ const renderFlights = (flights, container) => {
   });
 };
 
+const describeSelection = (items, fallback) => {
+  if (!items.length) return fallback;
+  return items.map((item) => item.title || item.code).join(", ");
+};
+
+const buildSearchMessages = (origins, destinations) => {
+  const hasEverywhere = destinations.some((item) => item.code === "EVERYWHERE");
+  const countries = destinations.filter((item) => item.entityType === "COUNTRY");
+  const airports = destinations.filter(
+    (item) => item.entityType === "AIRPORT" || item.entityType === "CITY"
+  );
+  const originLabel = describeSelection(origins, "partenze selezionate");
+  const destinationLabel = hasEverywhere
+    ? "tutto il mondo"
+    : describeSelection(destinations, "destinazioni selezionate");
+  const countryLabel = countries.length
+    ? describeSelection(countries, "paese selezionato")
+    : "";
+  const airportLabel = airports.length
+    ? describeSelection(airports, "destinazioni selezionate")
+    : "";
+
+  const messages = [
+    `Sto cercando voli da ${originLabel} verso ${destinationLabel}...`,
+  ];
+
+  if (countries.length) {
+    messages.push(
+      `Sto espandendo il paese ${countryLabel} in città e aeroporti...`
+    );
+  }
+
+  if (airports.length && !hasEverywhere) {
+    messages.push(`Sto interrogando ${airportLabel}...`);
+  } else if (!hasEverywhere) {
+    messages.push("Sto interrogando le destinazioni selezionate...");
+  }
+
+  messages.push("Quasi fatto, sto ordinando i risultati...");
+  return messages;
+};
+
+const startStatusRotation = (statusTitle, statusSubtitle, messages) => {
+  let index = 0;
+  const startedAt = Date.now();
+
+  statusTitle.textContent = messages[index] || "Ricerca in corso...";
+  statusSubtitle.textContent = "In corso da 0s";
+
+  const intervalId = setInterval(() => {
+    index = (index + 1) % messages.length;
+    const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+    statusTitle.textContent = messages[index];
+    statusSubtitle.textContent = `In corso da ${elapsedSeconds}s`;
+  }, 1800);
+
+  return () => clearInterval(intervalId);
+};
+
 const init = () => {
   const originSelector = new AirportSelector(
     document.getElementById("origin-selector"),
@@ -316,6 +396,7 @@ const init = () => {
   setDefaultDate();
 
   let lastFlights = [];
+  let stopStatusRotation = null;
 
   const getSortValue = () => {
     const selected = document.querySelector("input[name='sort']:checked");
@@ -346,8 +427,8 @@ const init = () => {
     statsEl.textContent = "";
     resultsEl.innerHTML = "";
 
-    const origins = originSelector.getCodes();
-    const destinations = destSelector.getCodes();
+    const origins = originSelector.getItems();
+    const destinations = destSelector.getItems();
 
     if (!origins.length) {
       statusTitle.textContent = "Seleziona almeno un aeroporto di partenza.";
@@ -355,7 +436,15 @@ const init = () => {
     }
 
     searchBtn.disabled = true;
-    statusTitle.textContent = "Ricerca in corso...";
+    if (stopStatusRotation) {
+      stopStatusRotation();
+    }
+    const statusMessages = buildSearchMessages(origins, destinations);
+    stopStatusRotation = startStatusRotation(
+      statusTitle,
+      statusSubtitle,
+      statusMessages
+    );
 
     const formattedDate = departDateInput.value
       ? departDateInput.value.split("-").reverse().join("/")
@@ -383,10 +472,15 @@ const init = () => {
 
       if (!response.ok) {
         statusTitle.textContent = data.error || "Errore durante la ricerca.";
+        statusSubtitle.textContent = "";
         searchBtn.disabled = false;
         return;
       }
 
+      if (stopStatusRotation) {
+        stopStatusRotation();
+        stopStatusRotation = null;
+      }
       statusTitle.textContent = `Trovati ${data.count} voli`;
       statusSubtitle.textContent = data.search_everywhere
         ? "Risultati ovunque"
@@ -398,8 +492,13 @@ const init = () => {
       renderFlights(sorted, resultsEl);
     } catch (error) {
       statusTitle.textContent = "Errore durante la ricerca.";
+      statusSubtitle.textContent = "";
     } finally {
       searchBtn.disabled = false;
+      if (stopStatusRotation) {
+        stopStatusRotation();
+        stopStatusRotation = null;
+      }
     }
   });
 };
