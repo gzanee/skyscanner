@@ -85,9 +85,14 @@ class AirportSearchWidget(ttk.Frame):
         self.after(200, self._check_focus_out)
 
     def _check_focus_out(self):
-        if not self.search_entry.focus_get():
-            self._set_placeholder()
-            self._hide_dropdown(None)
+        focused = self.search_entry.focus_get()
+        print(f"[AirportSearchWidget] FocusOut check: focused={focused}")
+        if focused in (self.search_entry, self.dropdown_listbox):
+            print("[AirportSearchWidget] FocusOut ignored: focus on entry/listbox")
+            return
+        print("[AirportSearchWidget] FocusOut: clearing placeholder and hiding dropdown")
+        self._set_placeholder()
+        self._hide_dropdown(None)
 
     def _on_key_release(self, event):
         # Ignora tasti speciali
@@ -226,9 +231,16 @@ class AirportSearchWidget(ttk.Frame):
 
     def _hide_dropdown(self, event):
         if self.dropdown_frame:
+            print("[AirportSearchWidget] Hiding dropdown")
             self.dropdown_frame.destroy()
             self.dropdown_frame = None
         self.dropdown_visible = False
+
+    def _restore_focus(self):
+        if self.search_entry.winfo_exists():
+            print("[AirportSearchWidget] Restoring focus to entry")
+            self.search_entry.focus_set()
+            self.search_entry.icursor(tk.END)
 
     def _on_listbox_hover(self, event):
         index = self.dropdown_listbox.nearest(event.y)
@@ -238,6 +250,7 @@ class AirportSearchWidget(ttk.Frame):
     def _on_listbox_select(self, event):
         selection = self.dropdown_listbox.curselection()
         if selection:
+            print(f"[AirportSearchWidget] Listbox select index={selection[0]}")
             self._select_item(selection[0])
 
     def _on_arrow_down(self, event):
@@ -276,6 +289,7 @@ class AirportSearchWidget(ttk.Frame):
 
     def _select_item(self, index):
         """Seleziona un aeroporto dal dropdown"""
+        print(f"[AirportSearchWidget] Selecting item index={index}")
         offset = 0
 
         # Check se è "Ovunque"
@@ -283,10 +297,12 @@ class AirportSearchWidget(ttk.Frame):
             if index == 0:
                 first_item = self.dropdown_listbox.get(0)
                 if "Ovunque" in first_item:
+                    print("[AirportSearchWidget] Selected 'Ovunque'")
                     self.selected_airports = ["EVERYWHERE"]
                     self._update_tags()
                     self._hide_dropdown(None)
                     self.search_var.set("")
+                    self._restore_focus()
                     return
             offset = 1 if "Ovunque" in self.dropdown_listbox.get(0) else 0
 
@@ -294,6 +310,7 @@ class AirportSearchWidget(ttk.Frame):
         result_index = index - offset
         if 0 <= result_index < len(self.search_results):
             airport = self.search_results[result_index]
+            print(f"[AirportSearchWidget] Selected airport {airport.title} ({airport.skyId})")
 
             # Evita duplicati
             if not any(a.skyId == airport.skyId for a in self.selected_airports if isinstance(a, Airport)):
@@ -306,7 +323,7 @@ class AirportSearchWidget(ttk.Frame):
 
         self._hide_dropdown(None)
         self.search_var.set("")
-        self.search_entry.focus_set()
+        self._restore_focus()
 
     def _update_tags(self):
         """Aggiorna la visualizzazione dei tag degli aeroporti selezionati"""
