@@ -471,15 +471,15 @@ const renderFlights = (flights, container) => {
     return leg;
   };
 
-  flights.forEach((flight) => {
+  const buildFlightCard = (flight) => {
     const card = createElement("div", "flight-card");
     const price = createElement("div", "price");
     const hasReturn = flight.prezzo_ritorno !== undefined && flight.prezzo_totale !== undefined;
-    const locationText = `${flight.città} ${flight.paese}`.trim();
+
     if (hasReturn) {
-      price.innerHTML = `<strong>€ ${Math.round(flight.prezzo_totale)}</strong><span>Andata € ${Math.round(flight.prezzo)} • Ritorno € ${Math.round(flight.prezzo_ritorno)}</span><span>${locationText}</span>`;
+      price.innerHTML = `<strong>€ ${Math.round(flight.prezzo_totale)}</strong><span>Andata € ${Math.round(flight.prezzo)} • Ritorno € ${Math.round(flight.prezzo_ritorno)}</span>`;
     } else {
-      price.innerHTML = `<strong>€ ${Math.round(flight.prezzo)}</strong><span>${locationText}</span>`;
+      price.innerHTML = `<strong>€ ${Math.round(flight.prezzo)}</strong>`;
     }
 
     const outboundLeg = buildLeg(
@@ -525,7 +525,77 @@ const renderFlights = (flights, container) => {
       }
     }
 
-    container.appendChild(card);
+    return card;
+  };
+
+  // Raggruppa voli per città
+  const groupedByCity = {};
+  flights.forEach((flight) => {
+    const cityKey = `${flight.città || "Sconosciuta"}|${flight.paese || ""}`;
+    if (!groupedByCity[cityKey]) {
+      groupedByCity[cityKey] = {
+        città: flight.città || "Sconosciuta",
+        paese: flight.paese || "",
+        flights: [],
+        minPrice: Infinity,
+      };
+    }
+    groupedByCity[cityKey].flights.push(flight);
+    const flightPrice = flight.prezzo_totale ?? flight.prezzo ?? Infinity;
+    if (flightPrice < groupedByCity[cityKey].minPrice) {
+      groupedByCity[cityKey].minPrice = flightPrice;
+    }
+  });
+
+  // Converti in array e ordina per prezzo minimo
+  const cityGroups = Object.values(groupedByCity).sort((a, b) => a.minPrice - b.minPrice);
+
+  // Se c'è una sola città, non usare accordion
+  if (cityGroups.length === 1) {
+    cityGroups[0].flights.forEach((flight) => {
+      container.appendChild(buildFlightCard(flight));
+    });
+    return;
+  }
+
+  // Crea accordion per ogni città
+  cityGroups.forEach((group, index) => {
+    const accordion = createElement("div", "city-accordion");
+
+    const header = createElement("div", "city-accordion-header");
+    const isOpen = index === 0; // Prima città aperta di default
+
+    const headerLeft = createElement("div", "city-accordion-left");
+    const chevron = createElement("span", "city-accordion-chevron");
+    chevron.innerHTML = "&#9662;"; // ▾
+    const cityName = createElement("span", "city-accordion-name");
+    cityName.textContent = group.paese ? `${group.città}, ${group.paese}` : group.città;
+    headerLeft.append(chevron, cityName);
+
+    const headerRight = createElement("div", "city-accordion-right");
+    const flightCount = createElement("span", "city-accordion-count");
+    flightCount.textContent = `${group.flights.length} ${group.flights.length === 1 ? "volo" : "voli"}`;
+    const minPrice = createElement("span", "city-accordion-price");
+    minPrice.textContent = `da € ${Math.round(group.minPrice)}`;
+    headerRight.append(flightCount, minPrice);
+
+    header.append(headerLeft, headerRight);
+
+    const content = createElement("div", "city-accordion-content");
+    if (isOpen) {
+      accordion.classList.add("open");
+    }
+
+    group.flights.forEach((flight) => {
+      content.appendChild(buildFlightCard(flight));
+    });
+
+    header.addEventListener("click", () => {
+      accordion.classList.toggle("open");
+    });
+
+    accordion.append(header, content);
+    container.appendChild(accordion);
   });
 };
 

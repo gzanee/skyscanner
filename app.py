@@ -496,31 +496,51 @@ def sort_flights(flights, sort_key):
 
 
 def attach_return_flights(outbound_flights, return_flights, total_max_price=None):
+    """Genera tutte le combinazioni andata-ritorno valide."""
     if not return_flights:
         return []
-    cheapest_return = min(return_flights, key=lambda f: f.get("prezzo", 0))
     combined = []
-    for flight in outbound_flights:
-        total_price = (flight.get("prezzo") or 0) + (cheapest_return.get("prezzo") or 0)
-        if total_max_price is not None and total_price > total_max_price:
-            continue
-        combined.append(
-            {
-                **flight,
-                "ritorno_partenza": cheapest_return.get("partenza"),
-                "ritorno_arrivo": cheapest_return.get("arrivo"),
-                "ritorno_durata": cheapest_return.get("durata"),
-                "ritorno_durata_min": cheapest_return.get("durata_min"),
-                "ritorno_scali": cheapest_return.get("scali"),
-                "ritorno_stopovers": cheapest_return.get("stopovers"),
-                "ritorno_compagnia": cheapest_return.get("compagnia"),
-                "ritorno_logo_url": cheapest_return.get("logo_url"),
-                "ritorno_codice_origine": cheapest_return.get("codice_origine"),
-                "ritorno_codice_dest": cheapest_return.get("codice_dest"),
-                "prezzo_ritorno": cheapest_return.get("prezzo"),
-                "prezzo_totale": total_price,
-            }
-        )
+    seen_combinations = set()
+
+    for outbound in outbound_flights:
+        for ret in return_flights:
+            outbound_price = outbound.get("prezzo") or 0
+            return_price = ret.get("prezzo") or 0
+            total_price = outbound_price + return_price
+
+            if total_max_price is not None and total_price > total_max_price:
+                continue
+
+            # Chiave per evitare duplicati esatti
+            combo_key = (
+                outbound.get("partenza"),
+                outbound.get("codice_dest"),
+                ret.get("partenza"),
+            )
+            if combo_key in seen_combinations:
+                continue
+            seen_combinations.add(combo_key)
+
+            combined.append(
+                {
+                    **outbound,
+                    "ritorno_partenza": ret.get("partenza"),
+                    "ritorno_arrivo": ret.get("arrivo"),
+                    "ritorno_durata": ret.get("durata"),
+                    "ritorno_durata_min": ret.get("durata_min"),
+                    "ritorno_scali": ret.get("scali"),
+                    "ritorno_stopovers": ret.get("stopovers"),
+                    "ritorno_compagnia": ret.get("compagnia"),
+                    "ritorno_logo_url": ret.get("logo_url"),
+                    "ritorno_codice_origine": ret.get("codice_origine"),
+                    "ritorno_codice_dest": ret.get("codice_dest"),
+                    "prezzo_ritorno": return_price,
+                    "prezzo_totale": total_price,
+                }
+            )
+
+    # Ordina per prezzo totale
+    combined.sort(key=lambda x: x.get("prezzo_totale", 0))
     return combined
 
 
