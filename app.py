@@ -2,10 +2,18 @@ import datetime
 import json
 import logging
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
+from functools import lru_cache
 from flask import Flask, Response, jsonify, render_template, request
 from skyscanner import SkyScanner
-from skyscanner.errors import GenericError
+from skyscanner.errors import GenericError, AttemptsExhaustedIncompleteResponse, BannedWithCaptcha
 from skyscanner.types import Airport, SpecialTypes
+
+# Configurazione parallelismo e timeout
+MAX_WORKERS = 20  # Numero di chiamate API in parallelo
+SEARCH_TIMEOUT_SECONDS = 300  # Timeout globale di 5 minuti
 
 
 logging.basicConfig(
@@ -19,7 +27,35 @@ logger = logging.getLogger(__name__)
 
 
 def build_scanner() -> SkyScanner:
-    return SkyScanner(locale="it-IT", currency="EUR", market="IT")
+    # Ridotto retry per velocizzare le ricerche (default: retry_delay=2, max_retries=15)
+    return SkyScanner(locale="it-IT", currency="EUR", market="IT", retry_delay=1, max_retries=8)
+
+
+class AirportCache:
+    """Cache thread-safe per i risultati di search_airports"""
+    def __init__(self):
+        self._cache = {}
+        self._lock = Lock()
+
+    def get(self, scanner: SkyScanner, code: str):
+        with self._lock:
+            if code in self._cache:
+                return self._cache[code]
+
+        # Esegui la ricerca fuori dal lock
+        result = scanner.search_airports(code)
+
+        with self._lock:
+            self._cache[code] = result
+        return result
+
+    def clear(self):
+        with self._lock:
+            self._cache.clear()
+
+
+# Cache globale per gli aeroporti (una per sessione di ricerca)
+_airport_cache = AirportCache()
 
 
 def parse_date(date_str: str) -> datetime.datetime:
@@ -492,6 +528,235 @@ def sse_event(payload):
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def search_single_route(
+    scanner: SkyScanner,
+    origin: Airport,
+    city: dict,
+    depart_date,
+    max_price,
+    min_hour,
+    max_hour,
+    min_arrival_hour,
+    max_arrival_hour,
+    direct_only,
+    same_day,
+    is_round_trip=False,
+    return_date=None,
+    return_max_price=None,
+    return_min_hour=0,
+    return_max_hour=24,
+    return_min_arrival_hour=0,
+    return_max_arrival_hour=24,
+    total_max_price=None,
+):
+    """
+    Esegue una singola ricerca per una rotta origin -> city.
+    Ritorna una lista di voli trovati (vuota se nessun risultato).
+    Thread-safe - può essere usata con ThreadPoolExecutor.
+    """
+    try:
+        # Usa la cache per gli aeroporti
+        city_airports = _airport_cache.get(scanner, city["skyCode"])
+        if not city_airports:
+            return []
+
+        flight_response = scanner.get_flight_prices(
+            origin=origin,
+            destination=city_airports[0],
+            depart_date=depart_date,
+        )
+
+        if is_round_trip:
+            outbound_flights = []
+            outbound_keys = {}
+            process_flight_response(
+                flight_response,
+                origin,
+                city,
+                depart_date,
+                max_price,
+                min_hour,
+                max_hour,
+                min_arrival_hour,
+                max_arrival_hour,
+                direct_only,
+                same_day,
+                outbound_flights,
+                outbound_keys,
+            )
+            if not outbound_flights:
+                return []
+
+            # Ricerca ritorno
+            return_response = scanner.get_flight_prices(
+                origin=city_airports[0],
+                destination=origin,
+                depart_date=return_date,
+            )
+            return_flights = []
+            return_keys = {}
+            return_city_info = {
+                "name": origin.title,
+                "skyCode": origin.skyId,
+                "country": "",
+            }
+            process_flight_response(
+                return_response,
+                city_airports[0],
+                return_city_info,
+                return_date,
+                return_max_price,
+                return_min_hour,
+                return_max_hour,
+                return_min_arrival_hour,
+                return_max_arrival_hour,
+                direct_only,
+                same_day,
+                return_flights,
+                return_keys,
+            )
+            return attach_return_flights(outbound_flights, return_flights, total_max_price)
+        else:
+            voli_trovati = []
+            voli_keys = {}
+            process_flight_response(
+                flight_response,
+                origin,
+                city,
+                depart_date,
+                max_price,
+                min_hour,
+                max_hour,
+                min_arrival_hour,
+                max_arrival_hour,
+                direct_only,
+                same_day,
+                voli_trovati,
+                voli_keys,
+            )
+            return voli_trovati
+
+    except (AttemptsExhaustedIncompleteResponse, BannedWithCaptcha, GenericError) as e:
+        logger.warning(f"Errore ricerca {origin.skyId} -> {city['skyCode']}: {e}")
+        return []
+    except Exception as e:
+        logger.error(f"Errore imprevisto ricerca {origin.skyId} -> {city['skyCode']}: {e}")
+        return []
+
+
+def search_single_route_direct(
+    scanner: SkyScanner,
+    origin: Airport,
+    dest: Airport,
+    depart_date,
+    max_price,
+    min_hour,
+    max_hour,
+    min_arrival_hour,
+    max_arrival_hour,
+    direct_only,
+    same_day,
+    is_round_trip=False,
+    return_date=None,
+    return_max_price=None,
+    return_min_hour=0,
+    return_max_hour=24,
+    return_min_arrival_hour=0,
+    return_max_arrival_hour=24,
+    total_max_price=None,
+):
+    """
+    Esegue una singola ricerca per una rotta origin -> dest (Airport diretto).
+    Ritorna una lista di voli trovati (vuota se nessun risultato).
+    Thread-safe - può essere usata con ThreadPoolExecutor.
+    """
+    try:
+        flight_response = scanner.get_flight_prices(
+            origin=origin,
+            destination=dest,
+            depart_date=depart_date,
+        )
+
+        city_info = {"name": dest.title, "skyCode": dest.skyId, "country": ""}
+
+        if is_round_trip:
+            outbound_flights = []
+            outbound_keys = {}
+            process_flight_response(
+                flight_response,
+                origin,
+                city_info,
+                depart_date,
+                max_price,
+                min_hour,
+                max_hour,
+                min_arrival_hour,
+                max_arrival_hour,
+                direct_only,
+                same_day,
+                outbound_flights,
+                outbound_keys,
+            )
+            if not outbound_flights:
+                return []
+
+            # Ricerca ritorno
+            return_response = scanner.get_flight_prices(
+                origin=dest,
+                destination=origin,
+                depart_date=return_date,
+            )
+            return_flights = []
+            return_keys = {}
+            return_city_info = {
+                "name": origin.title,
+                "skyCode": origin.skyId,
+                "country": "",
+            }
+            process_flight_response(
+                return_response,
+                dest,
+                return_city_info,
+                return_date,
+                return_max_price,
+                return_min_hour,
+                return_max_hour,
+                return_min_arrival_hour,
+                return_max_arrival_hour,
+                direct_only,
+                same_day,
+                return_flights,
+                return_keys,
+            )
+            return attach_return_flights(outbound_flights, return_flights, total_max_price)
+        else:
+            voli_trovati = []
+            voli_keys = {}
+            process_flight_response(
+                flight_response,
+                origin,
+                city_info,
+                depart_date,
+                max_price,
+                min_hour,
+                max_hour,
+                min_arrival_hour,
+                max_arrival_hour,
+                direct_only,
+                same_day,
+                voli_trovati,
+                voli_keys,
+            )
+            return voli_trovati
+
+    except (AttemptsExhaustedIncompleteResponse, BannedWithCaptcha, GenericError) as e:
+        logger.warning(f"Errore ricerca {origin.skyId} -> {dest.skyId}: {e}")
+        return []
+    except Exception as e:
+        logger.error(f"Errore imprevisto ricerca {origin.skyId} -> {dest.skyId}: {e}")
+        return []
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -590,6 +855,8 @@ def api_search_stream():
                 400,
             )
     def generate():
+        # Pulisci la cache degli aeroporti per questa ricerca
+        _airport_cache.clear()
         scanner = build_scanner()
 
         try:
@@ -756,109 +1023,124 @@ def api_search_stream():
             voli_keys = {}
             total_searches = len(cities) * len(origin_list)
             search_count = 0
+            start_time = time.time()
 
-            for city in cities:
-                for origin in origin_list:
+            # Prepara tutti i task da eseguire
+            search_tasks = [
+                (city, origin)
+                for city in cities
+                for origin in origin_list
+            ]
+
+            yield sse_event(
+                {
+                    "type": "progress",
+                    "message": f"Avvio ricerca parallela ({MAX_WORKERS} thread)...",
+                    "current": 0,
+                    "total": total_searches,
+                    "found": 0,
+                }
+            )
+
+            # Esegui le ricerche in parallelo
+            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                # Sottometti tutti i task
+                future_to_route = {
+                    executor.submit(
+                        search_single_route,
+                        scanner,
+                        origin,
+                        city,
+                        depart_date,
+                        max_price,
+                        min_hour,
+                        max_hour,
+                        min_arrival_hour,
+                        max_arrival_hour,
+                        direct_only,
+                        same_day,
+                        is_round_trip,
+                        return_date,
+                        return_max_price,
+                        return_min_hour,
+                        return_max_hour,
+                        return_min_arrival_hour,
+                        return_max_arrival_hour,
+                        total_max_price,
+                    ): (city, origin)
+                    for city, origin in search_tasks
+                }
+
+                # Processa i risultati man mano che arrivano
+                for future in as_completed(future_to_route):
+                    # Controlla timeout globale
+                    elapsed = time.time() - start_time
+                    if elapsed > SEARCH_TIMEOUT_SECONDS:
+                        logger.warning(f"Timeout globale raggiunto dopo {elapsed:.0f}s")
+                        yield sse_event(
+                            {
+                                "type": "progress",
+                                "message": f"Timeout raggiunto, mostro i risultati trovati...",
+                                "current": search_count,
+                                "total": total_searches,
+                                "found": len(voli_trovati),
+                            }
+                        )
+                        # Cancella i task rimanenti
+                        for f in future_to_route:
+                            f.cancel()
+                        break
+
+                    city, origin = future_to_route[future]
                     search_count += 1
                     country_name = city.get("country", "")
                     detail = f" ({country_name})" if country_name else ""
-                    yield sse_event(
-                        {
-                            "type": "progress",
-                            "message": f"Guardo {origin.skyId} → {city['name']}{detail}",
-                            "current": search_count,
-                            "total": total_searches,
-                            "found": len(voli_trovati),
-                        }
-                    )
 
-                    city_airports = scanner.search_airports(city["skyCode"])
-                    if not city_airports:
-                        continue
+                    try:
+                        flights_found = future.result(timeout=1)
+                        before_count = len(voli_trovati)
 
-                    flight_response = scanner.get_flight_prices(
-                        origin=origin,
-                        destination=city_airports[0],
-                        depart_date=depart_date,
-                    )
+                        if flights_found:
+                            # Deduplicazione
+                            for flight in flights_found:
+                                carrier_name = flight.get("compagnia", "N/A")
+                                key = (
+                                    f"{flight['codice_origine']}-{flight['codice_dest']}-"
+                                    f"{flight['partenza']}-{carrier_name}"
+                                )
+                                if key in voli_keys:
+                                    existing_idx = voli_keys[key]
+                                    price_key = "prezzo_totale" if is_round_trip else "prezzo"
+                                    if flight.get(price_key, 0) < voli_trovati[existing_idx].get(price_key, 0):
+                                        voli_trovati[existing_idx] = flight
+                                else:
+                                    voli_keys[key] = len(voli_trovati)
+                                    voli_trovati.append(flight)
 
-                    before_count = len(voli_trovati)
-                    if is_round_trip:
-                        outbound_flights = []
-                        outbound_keys = {}
-                        process_flight_response(
-                            flight_response,
-                            origin,
-                            city,
-                            depart_date,
-                            max_price,
-                            min_hour,
-                            max_hour,
-                            min_arrival_hour,
-                            max_arrival_hour,
-                            direct_only,
-                            same_day,
-                            outbound_flights,
-                            outbound_keys,
-                        )
-                        if not outbound_flights:
-                            continue
-                        return_response = scanner.get_flight_prices(
-                            origin=city_airports[0],
-                            destination=origin,
-                            depart_date=return_date,
-                        )
-                        return_flights = []
-                        return_keys = {}
-                        return_city_info = {
-                            "name": origin.title,
-                            "skyCode": origin.skyId,
-                            "country": "",
-                        }
-                        process_flight_response(
-                            return_response,
-                            city_airports[0],
-                            return_city_info,
-                            return_date,
-                            return_max_price,
-                            return_min_hour,
-                            return_max_hour,
-                            return_min_arrival_hour,
-                            return_max_arrival_hour,
-                            direct_only,
-                            same_day,
-                            return_flights,
-                            return_keys,
-                        )
-                        combined = attach_return_flights(
-                            outbound_flights, return_flights, total_max_price
-                        )
-                        if combined:
-                            voli_trovati.extend(combined)
-                    else:
-                        process_flight_response(
-                            flight_response,
-                            origin,
-                            city,
-                            depart_date,
-                            max_price,
-                            min_hour,
-                            max_hour,
-                            min_arrival_hour,
-                            max_arrival_hour,
-                            direct_only,
-                            same_day,
-                            voli_trovati,
-                            voli_keys,
-                        )
-                    if len(voli_trovati) > before_count:
-                        yield sse_event(
-                            {
-                                "type": "results",
-                                "flights": voli_trovati[before_count:],
-                                "count": len(voli_trovati),
-                            }
-                        )
+                        # Manda update di progresso ogni 5 ricerche o quando ci sono nuovi risultati
+                        new_flights = len(voli_trovati) - before_count
+                        if new_flights > 0 or search_count % 5 == 0:
+                            yield sse_event(
+                                {
+                                    "type": "progress",
+                                    "message": f"Completate {search_count}/{total_searches} ricerche",
+                                    "current": search_count,
+                                    "total": total_searches,
+                                    "found": len(voli_trovati),
+                                }
+                            )
+
+                        if new_flights > 0:
+                            yield sse_event(
+                                {
+                                    "type": "results",
+                                    "flights": voli_trovati[before_count:],
+                                    "count": len(voli_trovati),
+                                }
+                            )
+
+                    except Exception as e:
+                        logger.warning(f"Errore task {origin.skyId} -> {city['name']}: {e}")
 
             stats = {
                 "paesi": len(countries),
@@ -881,100 +1163,122 @@ def api_search_stream():
             voli_keys = {}
             total_searches = len(origin_list) * len(dest_list)
             search_count = 0
+            start_time = time.time()
 
-            for origin in origin_list:
-                for dest in dest_list:
-                    search_count += 1
-                    yield sse_event(
-                        {
-                            "type": "progress",
-                            "message": f"Guardo {origin.skyId} → {dest.title}",
-                            "current": search_count,
-                            "total": total_searches,
-                            "found": len(voli_trovati),
-                        }
-                    )
+            # Prepara tutti i task da eseguire
+            search_tasks = [
+                (origin, dest)
+                for origin in origin_list
+                for dest in dest_list
+            ]
 
-                    flight_response = scanner.get_flight_prices(
-                        origin=origin, destination=dest, depart_date=depart_date
-                    )
+            yield sse_event(
+                {
+                    "type": "progress",
+                    "message": f"Avvio ricerca parallela ({MAX_WORKERS} thread)...",
+                    "current": 0,
+                    "total": total_searches,
+                    "found": 0,
+                }
+            )
 
-                    city_info = {"name": dest.title, "skyCode": dest.skyId, "country": ""}
-                    before_count = len(voli_trovati)
-                    if is_round_trip:
-                        outbound_flights = []
-                        outbound_keys = {}
-                        process_flight_response(
-                            flight_response,
-                            origin,
-                            city_info,
-                            depart_date,
-                            max_price,
-                            min_hour,
-                            max_hour,
-                            min_arrival_hour,
-                            max_arrival_hour,
-                            direct_only,
-                            same_day,
-                            outbound_flights,
-                            outbound_keys,
-                        )
-                        if not outbound_flights:
-                            continue
-                        return_response = scanner.get_flight_prices(
-                            origin=dest, destination=origin, depart_date=return_date
-                        )
-                        return_flights = []
-                        return_keys = {}
-                        return_city_info = {
-                            "name": origin.title,
-                            "skyCode": origin.skyId,
-                            "country": "",
-                        }
-                        process_flight_response(
-                            return_response,
-                            dest,
-                            return_city_info,
-                            return_date,
-                            return_max_price,
-                            return_min_hour,
-                            return_max_hour,
-                            return_min_arrival_hour,
-                            return_max_arrival_hour,
-                            direct_only,
-                            same_day,
-                            return_flights,
-                            return_keys,
-                        )
-                        combined = attach_return_flights(
-                            outbound_flights, return_flights, total_max_price
-                        )
-                        if combined:
-                            voli_trovati.extend(combined)
-                    else:
-                        process_flight_response(
-                            flight_response,
-                            origin,
-                            city_info,
-                            depart_date,
-                            max_price,
-                            min_hour,
-                            max_hour,
-                            min_arrival_hour,
-                            max_arrival_hour,
-                            direct_only,
-                            same_day,
-                            voli_trovati,
-                            voli_keys,
-                        )
-                    if len(voli_trovati) > before_count:
+            # Esegui le ricerche in parallelo
+            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                # Sottometti tutti i task
+                future_to_route = {
+                    executor.submit(
+                        search_single_route_direct,
+                        scanner,
+                        origin,
+                        dest,
+                        depart_date,
+                        max_price,
+                        min_hour,
+                        max_hour,
+                        min_arrival_hour,
+                        max_arrival_hour,
+                        direct_only,
+                        same_day,
+                        is_round_trip,
+                        return_date,
+                        return_max_price,
+                        return_min_hour,
+                        return_max_hour,
+                        return_min_arrival_hour,
+                        return_max_arrival_hour,
+                        total_max_price,
+                    ): (origin, dest)
+                    for origin, dest in search_tasks
+                }
+
+                # Processa i risultati man mano che arrivano
+                for future in as_completed(future_to_route):
+                    # Controlla timeout globale
+                    elapsed = time.time() - start_time
+                    if elapsed > SEARCH_TIMEOUT_SECONDS:
+                        logger.warning(f"Timeout globale raggiunto dopo {elapsed:.0f}s")
                         yield sse_event(
                             {
-                                "type": "results",
-                                "flights": voli_trovati[before_count:],
-                                "count": len(voli_trovati),
+                                "type": "progress",
+                                "message": f"Timeout raggiunto, mostro i risultati trovati...",
+                                "current": search_count,
+                                "total": total_searches,
+                                "found": len(voli_trovati),
                             }
                         )
+                        # Cancella i task rimanenti
+                        for f in future_to_route:
+                            f.cancel()
+                        break
+
+                    origin, dest = future_to_route[future]
+                    search_count += 1
+
+                    try:
+                        flights_found = future.result(timeout=1)
+                        before_count = len(voli_trovati)
+
+                        if flights_found:
+                            # Deduplicazione
+                            for flight in flights_found:
+                                carrier_name = flight.get("compagnia", "N/A")
+                                key = (
+                                    f"{flight['codice_origine']}-{flight['codice_dest']}-"
+                                    f"{flight['partenza']}-{carrier_name}"
+                                )
+                                if key in voli_keys:
+                                    existing_idx = voli_keys[key]
+                                    price_key = "prezzo_totale" if is_round_trip else "prezzo"
+                                    if flight.get(price_key, 0) < voli_trovati[existing_idx].get(price_key, 0):
+                                        voli_trovati[existing_idx] = flight
+                                else:
+                                    voli_keys[key] = len(voli_trovati)
+                                    voli_trovati.append(flight)
+
+                        # Manda update di progresso ogni 5 ricerche o quando ci sono nuovi risultati
+                        new_flights = len(voli_trovati) - before_count
+                        if new_flights > 0 or search_count % 5 == 0:
+                            yield sse_event(
+                                {
+                                    "type": "progress",
+                                    "message": f"Completate {search_count}/{total_searches} ricerche",
+                                    "current": search_count,
+                                    "total": total_searches,
+                                    "found": len(voli_trovati),
+                                }
+                            )
+
+                        if new_flights > 0:
+                            yield sse_event(
+                                {
+                                    "type": "results",
+                                    "flights": voli_trovati[before_count:],
+                                    "count": len(voli_trovati),
+                                }
+                            )
+
+                    except Exception as e:
+                        logger.warning(f"Errore task {origin.skyId} -> {dest.title}: {e}")
 
             stats = {
                 "partenze": ", ".join(origin_codes_str),
