@@ -69,6 +69,12 @@ def dedupe_codes(items):
     return codes
 
 
+def parse_optional_price(value):
+    if value in (None, ""):
+        return None
+    return float(value)
+
+
 def extract_country_places(hierarchy, country_code):
     matches = {}
 
@@ -279,122 +285,6 @@ def process_flight_response(
             else:
                 voli_keys[key] = len(voli_trovati)
                 voli_trovati.append(flight)
-    voli_visti = set()
-    for bucket in flight_response.json.get("itineraries", {}).get("buckets", []):
-        for item in bucket.get("items", []):
-            if item["id"] in voli_visti:
-                continue
-            voli_visti.add(item["id"])
-
-            price = item.get("price", {}).get("raw", 999999)
-            if price > max_price:
-                continue
-
-            leg = item.get("legs", [{}])[0]
-            dep_str = leg.get("departure", "")
-            arr_str = leg.get("arrival", "")
-            if not dep_str or not arr_str:
-                continue
-
-            dep = datetime.datetime.fromisoformat(dep_str)
-            arr = datetime.datetime.fromisoformat(arr_str)
-
-            # Check departure time is within the selected range
-            dep_minutes = dep.hour * 60 + dep.minute
-            min_minutes = min_hour * 60
-            max_minutes = max_hour * 60
-            if dep_minutes < min_minutes or dep_minutes > max_minutes:
-                continue
-
-            if same_day and arr.date() != dep.date():
-                continue
-
-            stops = leg.get("stopCount", 0)
-            if direct_only and stops > 0:
-                continue
-
-            duration = leg.get("durationInMinutes", 0)
-            carriers = leg.get("carriers", {}).get("marketing", [])
-            dest_info = leg.get("destination", {})
-            origin_info = leg.get("origin", {})
-
-            if carriers and not logged_carrier_payload:
-                logger.info("Carrier payload sample: %s", carriers)
-                logged_carrier_payload = True
-
-            segments = leg.get("segments", [])
-            stopovers = []
-            if stops > 0 and len(segments) > 1:
-                for seg_idx in range(len(segments) - 1):
-                    seg = segments[seg_idx]
-                    next_seg = segments[seg_idx + 1]
-
-                    stop_dest = seg.get("destination", {})
-                    stop_city = stop_dest.get("city", stop_dest.get("name", ""))
-                    stop_code = stop_dest.get("displayCode", "")
-
-                    seg_arr = seg.get("arrival", "")
-                    next_dep = next_seg.get("departure", "")
-
-                    layover_min = 0
-                    if seg_arr and next_dep:
-                        try:
-                            arr_time = datetime.datetime.fromisoformat(seg_arr)
-                            dep_time = datetime.datetime.fromisoformat(next_dep)
-                            layover_min = int((dep_time - arr_time).total_seconds() / 60)
-                        except ValueError:
-                            pass
-
-                    stopovers.append(
-                        {
-                            "città": stop_city,
-                            "codice": stop_code,
-                            "arrivo": datetime.datetime.fromisoformat(seg_arr).strftime("%H:%M")
-                            if seg_arr
-                            else "",
-                            "partenza": datetime.datetime.fromisoformat(next_dep).strftime("%H:%M")
-                            if next_dep
-                            else "",
-                            "attesa": f"{layover_min // 60}h {layover_min % 60:02d}min"
-                            if layover_min > 0
-                            else "",
-                        }
-                    )
-
-            carrier_name = (
-                normalize_carrier_name(carriers[0].get("name", "N/A"))
-                if carriers
-                else "N/A"
-            )
-            carrier_logo = carriers[0].get("logoUrl") if carriers else ""
-
-            flight = {
-                "città": dest_info.get("city", city["name"]),
-                "paese": dest_info.get("country", city.get("country", "")),
-                "codice_dest": dest_info.get("displayCode", city["skyCode"]),
-                "codice_origine": origin_info.get("displayCode", origin.skyId),
-                "prezzo": price,
-                "partenza": dep.strftime("%H:%M"),
-                "arrivo": arr.strftime("%H:%M"),
-                "durata": f"{duration // 60}h {duration % 60:02d}min",
-                "durata_min": duration,
-                "scali": stops,
-                "stopovers": stopovers,
-                "compagnia": carrier_name,
-                "logo_url": carrier_logo,
-            }
-
-            key = (
-                f"{flight['codice_origine']}-{flight['codice_dest']}-"
-                f"{flight['partenza']}-{carrier_name}"
-            )
-            if key in voli_keys:
-                existing_idx = voli_keys[key]
-                if flight["prezzo"] < voli_trovati[existing_idx]["prezzo"]:
-                    voli_trovati[existing_idx] = flight
-            else:
-                voli_keys[key] = len(voli_trovati)
-                voli_trovati.append(flight)
 
 
 def search_everywhere_multi(
@@ -506,101 +396,6 @@ def search_everywhere_multi(
     }
 
     return voli_trovati, stats
-    origin_codes = [o.skyId for o in origin_list]
-    all_countries = {}
-
-    for origin in origin_list:
-        response = scanner.get_flight_prices(
-            origin=origin,
-            destination=SpecialTypes.EVERYWHERE,
-            depart_date=depart_date,
-        )
-
-        for r in response.json.get("everywhereDestination", {}).get("results", []):
-            content = r.get("content", {})
-            location = content.get("location", {})
-            price = content.get("flightQuotes", {}).get("cheapest", {}).get(
-                "rawPrice", 999999
-            )
-            if location.get("name") and location.get("skyCode") and price and price <= max_price:
-                sky_code = location["skyCode"]
-                if sky_code not in all_countries:
-                    all_countries[sky_code] = {
-                        "name": location["name"],
-                        "skyCode": sky_code,
-                    }
-
-    countries = list(all_countries.values())
-
-    all_cities = {}
-    first_origin = origin_list[0]
-
-    for country in countries:
-        country_airports = scanner.search_airports(country["skyCode"])
-        if not country_airports:
-            continue
-        country_entity = next(
-            (a for a in country_airports if a.skyId == country["skyCode"]),
-            country_airports[0],
-        )
-
-        country_response = scanner.get_flight_prices(
-            origin=first_origin,
-            destination=country_entity,
-            depart_date=depart_date,
-        )
-
-        for r in country_response.json.get("countryDestination", {}).get("results", []):
-            content = r.get("content", {})
-            location = content.get("location", {})
-            city_price = content.get("flightQuotes", {}).get("cheapest", {}).get(
-                "rawPrice", 999999
-            )
-            if location.get("name") and location.get("skyCode") and city_price and city_price <= max_price:
-                sky_code = location["skyCode"]
-                if sky_code not in all_cities:
-                    all_cities[sky_code] = {
-                        "name": location["name"],
-                        "skyCode": sky_code,
-                        "country": country["name"],
-                    }
-
-    cities = list(all_cities.values())
-
-    voli_trovati = []
-    voli_keys = {}
-
-    for city in cities:
-        for origin in origin_list:
-            city_airports = scanner.search_airports(city["skyCode"])
-            if not city_airports:
-                continue
-
-            flight_response = scanner.get_flight_prices(
-                origin=origin, destination=city_airports[0], depart_date=depart_date
-            )
-
-            process_flight_response(
-                flight_response,
-                origin,
-                city,
-                depart_date,
-                max_price,
-                min_hour,
-                max_hour,
-                direct_only,
-                same_day,
-                voli_trovati,
-                voli_keys,
-            )
-
-    stats = {
-        "paesi": len(countries),
-        "città": len(cities),
-        "partenze": ", ".join(origin_codes),
-    }
-
-    return voli_trovati, stats
 
 
 def search_specific_destinations(
@@ -652,40 +447,6 @@ def search_specific_destinations(
     }
 
     return voli_trovati, stats
-    origin_codes = [o.skyId for o in origin_list]
-    dest_codes = [d.skyId for d in dest_list]
-
-    voli_trovati = []
-    voli_keys = {}
-
-    for origin in origin_list:
-        for dest in dest_list:
-            flight_response = scanner.get_flight_prices(
-                origin=origin, destination=dest, depart_date=depart_date
-            )
-
-            city_info = {"name": dest.title, "skyCode": dest.skyId, "country": ""}
-
-            process_flight_response(
-                flight_response,
-                origin,
-                city_info,
-                depart_date,
-                max_price,
-                min_hour,
-                max_hour,
-                direct_only,
-                same_day,
-                voli_trovati,
-                voli_keys,
-            )
-
-    stats = {
-        "partenze": ", ".join(origin_codes),
-        "destinazioni": ", ".join(dest_codes),
-    }
-
-    return voli_trovati, stats
 
 
 def sort_flights(flights, sort_key):
@@ -693,7 +454,38 @@ def sort_flights(flights, sort_key):
         return sorted(flights, key=lambda f: f.get("partenza", "00:00"))
     if sort_key == "durata":
         return sorted(flights, key=lambda f: f.get("durata_min", 0))
-    return sorted(flights, key=lambda f: f.get("prezzo", 0))
+    return sorted(
+        flights, key=lambda f: f.get("prezzo_totale", f.get("prezzo", 0))
+    )
+
+
+def attach_return_flights(outbound_flights, return_flights, total_max_price=None):
+    if not return_flights:
+        return []
+    cheapest_return = min(return_flights, key=lambda f: f.get("prezzo", 0))
+    combined = []
+    for flight in outbound_flights:
+        total_price = (flight.get("prezzo") or 0) + (cheapest_return.get("prezzo") or 0)
+        if total_max_price is not None and total_price > total_max_price:
+            continue
+        combined.append(
+            {
+                **flight,
+                "ritorno_partenza": cheapest_return.get("partenza"),
+                "ritorno_arrivo": cheapest_return.get("arrivo"),
+                "ritorno_durata": cheapest_return.get("durata"),
+                "ritorno_durata_min": cheapest_return.get("durata_min"),
+                "ritorno_scali": cheapest_return.get("scali"),
+                "ritorno_stopovers": cheapest_return.get("stopovers"),
+                "ritorno_compagnia": cheapest_return.get("compagnia"),
+                "ritorno_logo_url": cheapest_return.get("logo_url"),
+                "ritorno_codice_origine": cheapest_return.get("codice_origine"),
+                "ritorno_codice_dest": cheapest_return.get("codice_dest"),
+                "prezzo_ritorno": cheapest_return.get("prezzo"),
+                "prezzo_totale": total_price,
+            }
+        )
+    return combined
 
 
 def sse_event(payload):
@@ -744,7 +536,7 @@ def api_search_stream():
 
     try:
         depart_date = parse_date(payload.get("depart_date", ""))
-        max_price = float(payload.get("max_price", 0))
+        max_price = parse_optional_price(payload.get("max_price"))
         min_hour = int(payload.get("min_hour", 0))
         max_hour = int(payload.get("max_hour", 24))
         min_arrival_hour = int(payload.get("min_arrival_hour", 0))
@@ -759,10 +551,44 @@ def api_search_stream():
             400,
         )
 
+    if max_price is None:
+        max_price = float("inf")
+
     direct_only = bool(payload.get("direct_only"))
     same_day = bool(payload.get("same_day", True))
     sort_key = payload.get("sort", "prezzo")
+    trip_type = payload.get("trip_type", "one-way")
+    is_round_trip = trip_type == "round-trip"
 
+    return_date = None
+    return_max_price = None
+    return_min_hour = 0
+    return_max_hour = 24
+    return_min_arrival_hour = 0
+    return_max_arrival_hour = 24
+    total_max_price = None
+    if is_round_trip:
+        try:
+            return_date = parse_date(payload.get("return_date", ""))
+            return_max_price = parse_optional_price(payload.get("return_max_price"))
+            return_min_hour = int(payload.get("return_min_hour", 0))
+            return_max_hour = int(payload.get("return_max_hour", 24))
+            return_min_arrival_hour = int(payload.get("return_min_arrival_hour", 0))
+            return_max_arrival_hour = int(payload.get("return_max_arrival_hour", 24))
+            total_max_price_raw = payload.get("total_max_price")
+            if total_max_price_raw not in (None, ""):
+                total_max_price = float(total_max_price_raw)
+            if return_max_price is None:
+                return_max_price = max_price
+        except (TypeError, ValueError):
+            return (
+                jsonify(
+                    {
+                        "error": "Controlla la data di ritorno. Formato data: GG/MM/AAAA.",
+                    }
+                ),
+                400,
+            )
     def generate():
         scanner = build_scanner()
 
@@ -957,21 +783,74 @@ def api_search_stream():
                     )
 
                     before_count = len(voli_trovati)
-                    process_flight_response(
-                        flight_response,
-                        origin,
-                        city,
-                        depart_date,
-                        max_price,
-                        min_hour,
-                        max_hour,
-                        min_arrival_hour,
-                        max_arrival_hour,
-                        direct_only,
-                        same_day,
-                        voli_trovati,
-                        voli_keys,
-                    )
+                    if is_round_trip:
+                        outbound_flights = []
+                        outbound_keys = {}
+                        process_flight_response(
+                            flight_response,
+                            origin,
+                            city,
+                            depart_date,
+                            max_price,
+                            min_hour,
+                            max_hour,
+                            min_arrival_hour,
+                            max_arrival_hour,
+                            direct_only,
+                            same_day,
+                            outbound_flights,
+                            outbound_keys,
+                        )
+                        if not outbound_flights:
+                            continue
+                        return_response = scanner.get_flight_prices(
+                            origin=city_airports[0],
+                            destination=origin,
+                            depart_date=return_date,
+                        )
+                        return_flights = []
+                        return_keys = {}
+                        return_city_info = {
+                            "name": origin.title,
+                            "skyCode": origin.skyId,
+                            "country": "",
+                        }
+                        process_flight_response(
+                            return_response,
+                            city_airports[0],
+                            return_city_info,
+                            return_date,
+                            return_max_price,
+                            return_min_hour,
+                            return_max_hour,
+                            return_min_arrival_hour,
+                            return_max_arrival_hour,
+                            direct_only,
+                            same_day,
+                            return_flights,
+                            return_keys,
+                        )
+                        combined = attach_return_flights(
+                            outbound_flights, return_flights, total_max_price
+                        )
+                        if combined:
+                            voli_trovati.extend(combined)
+                    else:
+                        process_flight_response(
+                            flight_response,
+                            origin,
+                            city,
+                            depart_date,
+                            max_price,
+                            min_hour,
+                            max_hour,
+                            min_arrival_hour,
+                            max_arrival_hour,
+                            direct_only,
+                            same_day,
+                            voli_trovati,
+                            voli_keys,
+                        )
                     if len(voli_trovati) > before_count:
                         yield sse_event(
                             {
@@ -1021,23 +900,73 @@ def api_search_stream():
                     )
 
                     city_info = {"name": dest.title, "skyCode": dest.skyId, "country": ""}
-
                     before_count = len(voli_trovati)
-                    process_flight_response(
-                        flight_response,
-                        origin,
-                        city_info,
-                        depart_date,
-                        max_price,
-                        min_hour,
-                        max_hour,
-                        min_arrival_hour,
-                        max_arrival_hour,
-                        direct_only,
-                        same_day,
-                        voli_trovati,
-                        voli_keys,
-                    )
+                    if is_round_trip:
+                        outbound_flights = []
+                        outbound_keys = {}
+                        process_flight_response(
+                            flight_response,
+                            origin,
+                            city_info,
+                            depart_date,
+                            max_price,
+                            min_hour,
+                            max_hour,
+                            min_arrival_hour,
+                            max_arrival_hour,
+                            direct_only,
+                            same_day,
+                            outbound_flights,
+                            outbound_keys,
+                        )
+                        if not outbound_flights:
+                            continue
+                        return_response = scanner.get_flight_prices(
+                            origin=dest, destination=origin, depart_date=return_date
+                        )
+                        return_flights = []
+                        return_keys = {}
+                        return_city_info = {
+                            "name": origin.title,
+                            "skyCode": origin.skyId,
+                            "country": "",
+                        }
+                        process_flight_response(
+                            return_response,
+                            dest,
+                            return_city_info,
+                            return_date,
+                            return_max_price,
+                            return_min_hour,
+                            return_max_hour,
+                            return_min_arrival_hour,
+                            return_max_arrival_hour,
+                            direct_only,
+                            same_day,
+                            return_flights,
+                            return_keys,
+                        )
+                        combined = attach_return_flights(
+                            outbound_flights, return_flights, total_max_price
+                        )
+                        if combined:
+                            voli_trovati.extend(combined)
+                    else:
+                        process_flight_response(
+                            flight_response,
+                            origin,
+                            city_info,
+                            depart_date,
+                            max_price,
+                            min_hour,
+                            max_hour,
+                            min_arrival_hour,
+                            max_arrival_hour,
+                            direct_only,
+                            same_day,
+                            voli_trovati,
+                            voli_keys,
+                        )
                     if len(voli_trovati) > before_count:
                         yield sse_event(
                             {
@@ -1090,7 +1019,7 @@ def api_search():
 
     try:
         depart_date = parse_date(payload.get("depart_date", ""))
-        max_price = float(payload.get("max_price", 0))
+        max_price = parse_optional_price(payload.get("max_price"))
         min_hour = int(payload.get("min_hour", 0))
         max_hour = int(payload.get("max_hour", 24))
         min_arrival_hour = int(payload.get("min_arrival_hour", 0))
@@ -1105,9 +1034,53 @@ def api_search():
             400,
         )
 
+    if max_price is None:
+        max_price = float("inf")
+
     direct_only = bool(payload.get("direct_only"))
     same_day = bool(payload.get("same_day", True))
     sort_key = payload.get("sort", "prezzo")
+    trip_type = payload.get("trip_type", "one-way")
+    is_round_trip = trip_type == "round-trip"
+
+    return_date = None
+    return_max_price = None
+    return_min_hour = 0
+    return_max_hour = 24
+    return_min_arrival_hour = 0
+    return_max_arrival_hour = 24
+    total_max_price = None
+    if is_round_trip:
+        if search_everywhere:
+            return (
+                jsonify(
+                    {
+                        "error": "La modalità andata e ritorno richiede una destinazione specifica.",
+                    }
+                ),
+                400,
+            )
+        try:
+            return_date = parse_date(payload.get("return_date", ""))
+            return_max_price = parse_optional_price(payload.get("return_max_price"))
+            return_min_hour = int(payload.get("return_min_hour", 0))
+            return_max_hour = int(payload.get("return_max_hour", 24))
+            return_min_arrival_hour = int(payload.get("return_min_arrival_hour", 0))
+            return_max_arrival_hour = int(payload.get("return_max_arrival_hour", 24))
+            total_max_price_raw = payload.get("total_max_price")
+            if total_max_price_raw not in (None, ""):
+                total_max_price = float(total_max_price_raw)
+            if return_max_price is None:
+                return_max_price = max_price
+        except (TypeError, ValueError):
+            return (
+                jsonify(
+                    {
+                        "error": "Controlla la data di ritorno. Formato data: GG/MM/AAAA.",
+                    }
+                ),
+                400,
+            )
 
     scanner = build_scanner()
 
@@ -1150,37 +1123,233 @@ def api_search():
             )
 
     if search_everywhere:
-        flights, stats = search_everywhere_multi(
-            scanner,
-            origin_list,
-            depart_date,
-            max_price,
-            min_hour,
-            max_hour,
-            min_arrival_hour,
-            max_arrival_hour,
-            direct_only,
-            same_day,
-        )
+        if is_round_trip:
+            flights = []
+            origin_codes_str = [o.skyId for o in origin_list]
+            all_countries = {}
+
+            for origin in origin_list:
+                response = scanner.get_flight_prices(
+                    origin=origin,
+                    destination=SpecialTypes.EVERYWHERE,
+                    depart_date=depart_date,
+                )
+
+                for r in response.json.get("everywhereDestination", {}).get("results", []):
+                    content = r.get("content", {})
+                    location = content.get("location", {})
+                    price = content.get("flightQuotes", {}).get("cheapest", {}).get(
+                        "rawPrice", 999999
+                    )
+                    if location.get("name") and location.get("skyCode") and price and price <= max_price:
+                        sky_code = location["skyCode"]
+                        if sky_code not in all_countries:
+                            all_countries[sky_code] = {
+                                "name": location["name"],
+                                "skyCode": sky_code,
+                            }
+
+            countries = list(all_countries.values())
+
+            all_cities = {}
+            first_origin = origin_list[0]
+
+            for country in countries:
+                country_airports = scanner.search_airports(country["skyCode"])
+                if not country_airports:
+                    continue
+                country_entity = next(
+                    (a for a in country_airports if a.skyId == country["skyCode"]),
+                    country_airports[0],
+                )
+
+                country_response = scanner.get_flight_prices(
+                    origin=first_origin,
+                    destination=country_entity,
+                    depart_date=depart_date,
+                )
+
+                for r in country_response.json.get("countryDestination", {}).get("results", []):
+                    content = r.get("content", {})
+                    location = content.get("location", {})
+                    city_price = content.get("flightQuotes", {}).get("cheapest", {}).get(
+                        "rawPrice", 999999
+                    )
+                    if location.get("name") and location.get("skyCode") and city_price and city_price <= max_price:
+                        sky_code = location["skyCode"]
+                        if sky_code not in all_cities:
+                            all_cities[sky_code] = {
+                                "name": location["name"],
+                                "skyCode": sky_code,
+                                "country": country["name"],
+                            }
+
+            cities = list(all_cities.values())
+            stats = {
+                "paesi": len(countries),
+                "città": len(cities),
+                "partenze": ", ".join(origin_codes_str),
+            }
+
+            for city in cities:
+                for origin in origin_list:
+                    city_airports = scanner.search_airports(city["skyCode"])
+                    if not city_airports:
+                        continue
+                    flight_response = scanner.get_flight_prices(
+                        origin=origin,
+                        destination=city_airports[0],
+                        depart_date=depart_date,
+                    )
+                    outbound_flights = []
+                    outbound_keys = {}
+                    process_flight_response(
+                        flight_response,
+                        origin,
+                        city,
+                        depart_date,
+                        max_price,
+                        min_hour,
+                        max_hour,
+                        min_arrival_hour,
+                        max_arrival_hour,
+                        direct_only,
+                        same_day,
+                        outbound_flights,
+                        outbound_keys,
+                    )
+                    if not outbound_flights:
+                        continue
+                    return_response = scanner.get_flight_prices(
+                        origin=city_airports[0],
+                        destination=origin,
+                        depart_date=return_date,
+                    )
+                    return_flights = []
+                    return_keys = {}
+                    return_city_info = {
+                        "name": origin.title,
+                        "skyCode": origin.skyId,
+                        "country": "",
+                    }
+                    process_flight_response(
+                        return_response,
+                        city_airports[0],
+                        return_city_info,
+                        return_date,
+                        return_max_price,
+                        return_min_hour,
+                        return_max_hour,
+                        return_min_arrival_hour,
+                        return_max_arrival_hour,
+                        direct_only,
+                        same_day,
+                        return_flights,
+                        return_keys,
+                    )
+                    flights.extend(
+                        attach_return_flights(
+                            outbound_flights, return_flights, total_max_price
+                        )
+                    )
+        else:
+            flights, stats = search_everywhere_multi(
+                scanner,
+                origin_list,
+                depart_date,
+                max_price,
+                min_hour,
+                max_hour,
+                min_arrival_hour,
+                max_arrival_hour,
+                direct_only,
+                same_day,
+            )
     else:
         try:
             dest_list = [airport_from_code(scanner, code) for code in dest_codes]
         except GenericError as exc:
             return jsonify({"error": str(exc)}), 400
 
-        flights, stats = search_specific_destinations(
-            scanner,
-            origin_list,
-            dest_list,
-            depart_date,
-            max_price,
-            min_hour,
-            max_hour,
-            min_arrival_hour,
-            max_arrival_hour,
-            direct_only,
-            same_day,
-        )
+        if is_round_trip:
+            flights = []
+            stats = {
+                "partenze": ", ".join([o.skyId for o in origin_list]),
+                "destinazioni": ", ".join([d.skyId for d in dest_list]),
+            }
+            for origin in origin_list:
+                for dest in dest_list:
+                    flight_response = scanner.get_flight_prices(
+                        origin=origin, destination=dest, depart_date=depart_date
+                    )
+                    city_info = {
+                        "name": dest.title,
+                        "skyCode": dest.skyId,
+                        "country": "",
+                    }
+                    outbound_flights = []
+                    outbound_keys = {}
+                    process_flight_response(
+                        flight_response,
+                        origin,
+                        city_info,
+                        depart_date,
+                        max_price,
+                        min_hour,
+                        max_hour,
+                        min_arrival_hour,
+                        max_arrival_hour,
+                        direct_only,
+                        same_day,
+                        outbound_flights,
+                        outbound_keys,
+                    )
+                    if not outbound_flights:
+                        continue
+                    return_response = scanner.get_flight_prices(
+                        origin=dest, destination=origin, depart_date=return_date
+                    )
+                    return_flights = []
+                    return_keys = {}
+                    return_city_info = {
+                        "name": origin.title,
+                        "skyCode": origin.skyId,
+                        "country": "",
+                    }
+                    process_flight_response(
+                        return_response,
+                        dest,
+                        return_city_info,
+                        return_date,
+                        return_max_price,
+                        return_min_hour,
+                        return_max_hour,
+                        return_min_arrival_hour,
+                        return_max_arrival_hour,
+                        direct_only,
+                        same_day,
+                        return_flights,
+                        return_keys,
+                    )
+                    flights.extend(
+                        attach_return_flights(
+                            outbound_flights, return_flights, total_max_price
+                        )
+                    )
+        else:
+            flights, stats = search_specific_destinations(
+                scanner,
+                origin_list,
+                dest_list,
+                depart_date,
+                max_price,
+                min_hour,
+                max_hour,
+                min_arrival_hour,
+                max_arrival_hour,
+                direct_only,
+                same_day,
+            )
 
     flights = sort_flights(flights, sort_key)
 

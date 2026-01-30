@@ -57,9 +57,35 @@ body {
 
 .form-row {
   display: grid;
-  grid-template-columns: 1.4fr auto 1.4fr 0.7fr 0.7fr;
+  grid-template-columns: 1.4fr auto 1.4fr 0.7fr 0.7fr 0.7fr;
   gap: 16px;
   align-items: end;
+}
+
+.trip-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 16px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.trip-label {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.trip-choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.return-only.is-hidden {
+  display: none;
 }
 
 .field label {
@@ -284,6 +310,30 @@ body {
   align-items: center;
 }
 
+.flight-top.no-price {
+  grid-template-columns: 140px 1fr;
+}
+
+.flight-leg {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.leg-label {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.return-leg {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+}
+
 .airline {
   display: flex;
   flex-direction: column;
@@ -475,6 +525,25 @@ body {
   flex-wrap: wrap;
   gap: 24px;
   align-items: flex-start;
+}
+
+.subsection-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  background: #fff;
+  border: 1px solid var(--border);
+  min-width: 260px;
+}
+
+.subsection-group-title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--primary);
+  letter-spacing: 0.6px;
 }
 
 .subsection-options {

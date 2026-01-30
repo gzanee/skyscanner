@@ -397,32 +397,56 @@ const renderFlights = (flights, container) => {
     return;
   }
 
-  flights.forEach((flight) => {
-    const card = createElement("div", "flight-card");
+  const buildStopovers = (stopovers, className = "") => {
+    if (!stopovers || !stopovers.length) return null;
+    const stopoversEl = createElement("div", `stopovers ${className}`.trim());
+    stopovers.forEach((stop) => {
+      const line = createElement("span");
+      line.innerHTML = `<span class="icon">✈</span>Scalo a ${stop.città}${stop.codice ? ` (${stop.codice})` : ""}: arrivo ${stop.arrivo}${stop.partenza ? ` → ripartenza ${stop.partenza}` : ""}${stop.attesa ? ` (attesa ${stop.attesa})` : ""}`;
+      stopoversEl.appendChild(line);
+    });
+    return stopoversEl;
+  };
+
+  const buildLeg = ({
+    compagnia,
+    logo_url,
+    partenza,
+    arrivo,
+    codice_origine,
+    codice_dest,
+    durata,
+    scali,
+  }, labelText, priceEl = null) => {
+    const leg = createElement("div", "flight-leg");
+    const label = createElement("span", "leg-label");
+    label.textContent = labelText;
+    leg.appendChild(label);
+
     const top = createElement("div", "flight-top");
 
     const airline = createElement("div", "airline");
     const logo = createElement("div", "logo");
-    if (flight.logo_url) {
+    if (logo_url) {
       const img = createElement("img");
-      img.src = flight.logo_url;
-      img.alt = flight.compagnia || "Logo compagnia";
+      img.src = logo_url;
+      img.alt = compagnia || "Logo compagnia";
       img.loading = "lazy";
       logo.appendChild(img);
     } else {
-      logo.style.background = getAirlineColor(flight.compagnia || "");
-      logo.textContent = getInitials(flight.compagnia || "NA");
+      logo.style.background = getAirlineColor(compagnia || "");
+      logo.textContent = getInitials(compagnia || "NA");
     }
     airline.appendChild(logo);
     const airlineName = createElement("span");
-    airlineName.textContent = flight.compagnia || "N/A";
+    airlineName.textContent = compagnia || "N/A";
     airline.appendChild(airlineName);
 
     const times = createElement("div", "times");
     const dep = createElement("div", "time-block");
-    dep.innerHTML = `<strong>${flight.partenza}</strong><span>${flight.codice_origine}</span>`;
+    dep.innerHTML = `<strong>${partenza}</strong><span>${codice_origine}</span>`;
     const duration = createElement("div", "time-block");
-    const stopCount = Number(flight.scali || 0);
+    const stopCount = Number(scali || 0);
     const stopLabel = stopCount === 0 ? "Diretto" : `${stopCount} scalo`;
     let stopDots = "";
     if (stopCount > 0) {
@@ -432,25 +456,73 @@ const renderFlights = (flights, container) => {
       });
       stopDots = dots.join("");
     }
-    duration.innerHTML = `<div class="stops">${flight.durata}</div><div class="line">${stopDots}</div><div class="stops">${stopLabel}</div>`;
+    duration.innerHTML = `<div class="stops">${durata}</div><div class="line">${stopDots}</div><div class="stops">${stopLabel}</div>`;
     const arr = createElement("div", "time-block");
-    arr.innerHTML = `<strong>${flight.arrivo}</strong><span>${flight.codice_dest}</span>`;
+    arr.innerHTML = `<strong>${arrivo}</strong><span>${codice_dest}</span>`;
     times.append(dep, duration, arr);
 
+    if (priceEl) {
+      top.append(airline, times, priceEl);
+    } else {
+      top.classList.add("no-price");
+      top.append(airline, times);
+    }
+    leg.appendChild(top);
+    return leg;
+  };
+
+  flights.forEach((flight) => {
+    const card = createElement("div", "flight-card");
     const price = createElement("div", "price");
-    price.innerHTML = `<strong>€ ${Math.round(flight.prezzo)}</strong><span>${flight.città} ${flight.paese}</span>`;
+    const hasReturn = flight.prezzo_ritorno !== undefined && flight.prezzo_totale !== undefined;
+    const locationText = `${flight.città} ${flight.paese}`.trim();
+    if (hasReturn) {
+      price.innerHTML = `<strong>€ ${Math.round(flight.prezzo_totale)}</strong><span>Andata € ${Math.round(flight.prezzo)} • Ritorno € ${Math.round(flight.prezzo_ritorno)}</span><span>${locationText}</span>`;
+    } else {
+      price.innerHTML = `<strong>€ ${Math.round(flight.prezzo)}</strong><span>${locationText}</span>`;
+    }
 
-    top.append(airline, times, price);
-    card.appendChild(top);
+    const outboundLeg = buildLeg(
+      {
+        compagnia: flight.compagnia,
+        logo_url: flight.logo_url,
+        partenza: flight.partenza,
+        arrivo: flight.arrivo,
+        codice_origine: flight.codice_origine,
+        codice_dest: flight.codice_dest,
+        durata: flight.durata,
+        scali: flight.scali,
+      },
+      "Andata",
+      price
+    );
+    card.appendChild(outboundLeg);
 
-    if (flight.stopovers && flight.stopovers.length) {
-      const stopovers = createElement("div", "stopovers");
-      flight.stopovers.forEach((stop) => {
-        const line = createElement("span");
-        line.innerHTML = `<span class="icon">✈</span>Scalo a ${stop.città}${stop.codice ? ` (${stop.codice})` : ""}: arrivo ${stop.arrivo}${stop.partenza ? ` → ripartenza ${stop.partenza}` : ""}${stop.attesa ? ` (attesa ${stop.attesa})` : ""}`;
-        stopovers.appendChild(line);
-      });
-      card.appendChild(stopovers);
+    const outboundStopovers = buildStopovers(flight.stopovers);
+    if (outboundStopovers) {
+      card.appendChild(outboundStopovers);
+    }
+
+    if (hasReturn) {
+      const returnLeg = buildLeg(
+        {
+          compagnia: flight.ritorno_compagnia,
+          logo_url: flight.ritorno_logo_url,
+          partenza: flight.ritorno_partenza,
+          arrivo: flight.ritorno_arrivo,
+          codice_origine: flight.ritorno_codice_origine,
+          codice_dest: flight.ritorno_codice_dest,
+          durata: flight.ritorno_durata,
+          scali: flight.ritorno_scali,
+        },
+        "Ritorno"
+      );
+      returnLeg.classList.add("return-leg");
+      card.appendChild(returnLeg);
+      const returnStopovers = buildStopovers(flight.ritorno_stopovers, "return-stopovers");
+      if (returnStopovers) {
+        card.appendChild(returnStopovers);
+      }
     }
 
     container.appendChild(card);
@@ -511,9 +583,43 @@ const init = () => {
     }
   );
 
+  const returnDepartureSlider = new TimeRangeSlider(
+    document.getElementById("time-range-slider-return-departure"),
+    {
+      min: 0,
+      max: 24,
+      step: 0.25,
+      initialMin: 0,
+      initialMax: 24,
+      minInput: document.getElementById("return-min-hour"),
+      maxInput: document.getElementById("return-max-hour"),
+    }
+  );
+
+  const returnArrivalSlider = new TimeRangeSlider(
+    document.getElementById("time-range-slider-return-arrival"),
+    {
+      min: 0,
+      max: 24,
+      step: 0.25,
+      initialMin: 0,
+      initialMax: 24,
+      minInput: document.getElementById("return-min-arrival-hour"),
+      maxInput: document.getElementById("return-max-arrival-hour"),
+    }
+  );
+
   const form = document.getElementById("search-form");
   const departDateInput = document.getElementById("depart-date");
+  const returnDateInput = document.getElementById("return-date");
+  const returnDateField = document.getElementById("return-date-field");
+  const returnTimeGroup = document.getElementById("return-time-group");
+  const returnPriceField = document.getElementById("return-price-field");
+  const totalPriceField = document.getElementById("total-price-field");
+  const tripTypeInputs = document.querySelectorAll("input[name='trip-type']");
   const maxPriceInput = document.getElementById("max-price");
+  const maxPriceReturnInput = document.getElementById("max-price-return");
+  const maxPriceTotalInput = document.getElementById("max-price-total");
   const minHourInput = document.getElementById("min-hour");
   const maxHourInput = document.getElementById("max-hour");
   const directOnlyInput = document.getElementById("direct-only");
@@ -531,6 +637,12 @@ const init = () => {
     const month = String(date.getMonth() + 1).padStart(2, "0");
     const year = date.getFullYear();
     departDateInput.value = `${year}-${month}-${day}`;
+    const returnDate = new Date(date);
+    returnDate.setDate(returnDate.getDate() + 7);
+    const returnDay = String(returnDate.getDate()).padStart(2, "0");
+    const returnMonth = String(returnDate.getMonth() + 1).padStart(2, "0");
+    const returnYear = returnDate.getFullYear();
+    returnDateInput.value = `${returnYear}-${returnMonth}-${returnDay}`;
   };
   setDefaultDate();
 
@@ -552,8 +664,29 @@ const init = () => {
     if (sortValue === "durata") {
       return copy.sort((a, b) => (a.durata_min || 0) - (b.durata_min || 0));
     }
-    return copy.sort((a, b) => (a.prezzo || 0) - (b.prezzo || 0));
+    return copy.sort((a, b) => {
+      const priceA = a.prezzo_totale ?? a.prezzo ?? 0;
+      const priceB = b.prezzo_totale ?? b.prezzo ?? 0;
+      return priceA - priceB;
+    });
   };
+
+  const updateTripVisibility = () => {
+    const selected = document.querySelector("input[name='trip-type']:checked");
+    const isRoundTrip = selected?.value === "round-trip";
+    [returnDateField, returnTimeGroup, returnPriceField, totalPriceField].forEach((el) => {
+      if (!el) return;
+      el.classList.toggle("is-hidden", !isRoundTrip);
+    });
+    returnDateInput.disabled = !isRoundTrip;
+    maxPriceReturnInput.disabled = !isRoundTrip;
+    maxPriceTotalInput.disabled = !isRoundTrip;
+  };
+
+  tripTypeInputs.forEach((input) => {
+    input.addEventListener("change", updateTripVisibility);
+  });
+  updateTripVisibility();
 
   document.querySelectorAll("input[name='sort']").forEach((radio) => {
     radio.addEventListener("change", () => {
@@ -594,9 +727,15 @@ const init = () => {
     const formattedDate = departDateInput.value
       ? departDateInput.value.split("-").reverse().join("/")
       : "";
+    const formattedReturnDate = returnDateInput.value
+      ? returnDateInput.value.split("-").reverse().join("/")
+      : "";
     
     const departureValues = departureSlider.getValues();
     const arrivalValues = arrivalSlider.getValues();
+    const returnDepartureValues = returnDepartureSlider.getValues();
+    const returnArrivalValues = returnArrivalSlider.getValues();
+    const tripType = document.querySelector("input[name='trip-type']:checked")?.value || "one-way";
     
     const payload = {
       origins,
@@ -611,7 +750,18 @@ const init = () => {
       direct_only: directOnlyInput.checked,
       same_day: sameDayInput.checked,
       sort: getSortValue(),
+      trip_type: tripType,
     };
+
+    if (tripType === "round-trip") {
+      payload.return_date = formattedReturnDate;
+      payload.return_max_price = maxPriceReturnInput.value;
+      payload.total_max_price = maxPriceTotalInput.value;
+      payload.return_min_hour = returnDepartureValues.minHour;
+      payload.return_max_hour = returnDepartureValues.maxHour;
+      payload.return_min_arrival_hour = returnArrivalValues.minHour;
+      payload.return_max_arrival_hour = returnArrivalValues.maxHour;
+    }
 
     try {
       const response = await fetch(API_SEARCH_STREAM, {
