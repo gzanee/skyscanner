@@ -657,15 +657,115 @@ body {
   color: var(--primary);
 }
 
+/* ===== City Accordion ===== */
+.city-accordion {
+  background: var(--card);
+  border-radius: 14px;
+  margin-bottom: 12px;
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  border: 1px solid var(--border);
+}
+
+.city-accordion-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.2s ease;
+}
+
+.city-accordion-header:hover {
+  background: rgba(26, 79, 214, 0.04);
+}
+
+.city-accordion-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.city-accordion-chevron {
+  font-size: 14px;
+  color: var(--muted);
+  transition: transform 0.25s ease;
+  display: inline-block;
+}
+
+.city-accordion.open .city-accordion-chevron {
+  transform: rotate(180deg);
+}
+
+.city-accordion-name {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.city-accordion-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.city-accordion-count {
+  font-size: 13px;
+  color: var(--muted);
+  background: var(--bg);
+  padding: 4px 10px;
+  border-radius: 20px;
+}
+
+.city-accordion-price {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.city-accordion-content {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.3s ease;
+}
+
+.city-accordion.open .city-accordion-content {
+  max-height: 5000px;
+}
+
+.city-accordion-content .flight-card {
+  margin: 0 12px 12px 12px;
+  border-radius: 10px;
+}
+
+.city-accordion-content .flight-card:first-child {
+  margin-top: 4px;
+}
+
 /* ===== Responsive ===== */
 @media (max-width: 768px) {
   .subsection-content {
     flex-direction: column;
     gap: 16px;
   }
-  
+
   .time-slider-field {
     min-width: 100%;
     max-width: 100%;
+  }
+
+  .city-accordion-header {
+    padding: 14px 16px;
+  }
+
+  .city-accordion-right {
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+  }
+
+  .city-accordion-name {
+    font-size: 14px;
   }
 }
