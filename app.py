@@ -1,11 +1,21 @@
 import datetime
-from flask import Flask, jsonify, render_template, request
+import json
+import logging
+import sys
+from flask import Flask, Response, jsonify, render_template, request
 from skyscanner import SkyScanner
 from skyscanner.errors import GenericError
 from skyscanner.types import Airport, SpecialTypes
 
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+
 app = Flask(__name__)
+logger = logging.getLogger(__name__)
 
 
 def build_scanner() -> SkyScanner:
@@ -18,6 +28,15 @@ def parse_date(date_str: str) -> datetime.datetime:
 
 def airport_from_code(scanner: SkyScanner, code: str) -> Airport:
     return scanner.get_airport_by_code(code)
+
+
+def normalize_carrier_name(name: str) -> str:
+    if not name:
+        return "N/A"
+    lower_name = name.strip().lower()
+    if "easyjet" in lower_name:
+        return "easyJet"
+    return name.strip()
 
 
 def normalize_selected_locations(items):
@@ -136,6 +155,7 @@ def process_flight_response(
     voli_trovati,
     voli_keys,
 ):
+    logged_carrier_payload = False
     voli_visti = set()
     for bucket in flight_response.json.get("itineraries", {}).get("buckets", []):
         for item in bucket.get("items", []):
@@ -182,6 +202,10 @@ def process_flight_response(
             dest_info = leg.get("destination", {})
             origin_info = leg.get("origin", {})
 
+            if carriers and not logged_carrier_payload:
+                logger.info("Carrier payload sample: %s", carriers)
+                logged_carrier_payload = True
+
             segments = leg.get("segments", [])
             stopovers = []
             if stops > 0 and len(segments) > 1:
@@ -221,6 +245,13 @@ def process_flight_response(
                         }
                     )
 
+            carrier_name = (
+                normalize_carrier_name(carriers[0].get("name", "N/A"))
+                if carriers
+                else "N/A"
+            )
+            carrier_logo = carriers[0].get("logoUrl") if carriers else ""
+
             flight = {
                 "città": dest_info.get("city", city["name"]),
                 "paese": dest_info.get("country", city.get("country", "")),
@@ -233,15 +264,20 @@ def process_flight_response(
                 "durata_min": duration,
                 "scali": stops,
                 "stopovers": stopovers,
-                "compagnia": carriers[0].get("name", "N/A") if carriers else "N/A",
+                "compagnia": carrier_name,
+                "logo_url": carrier_logo,
             }
 
             key = (
                 f"{flight['codice_origine']}-{flight['codice_dest']}-"
-                f"{flight['partenza']}-{flight['prezzo']}"
+                f"{flight['partenza']}-{carrier_name}"
             )
-            if key not in voli_keys:
-                voli_keys.add(key)
+            if key in voli_keys:
+                existing_idx = voli_keys[key]
+                if flight["prezzo"] < voli_trovati[existing_idx]["prezzo"]:
+                    voli_trovati[existing_idx] = flight
+            else:
+                voli_keys[key] = len(voli_trovati)
                 voli_trovati.append(flight)
     voli_visti = set()
     for bucket in flight_response.json.get("itineraries", {}).get("buckets", []):
@@ -282,6 +318,10 @@ def process_flight_response(
             dest_info = leg.get("destination", {})
             origin_info = leg.get("origin", {})
 
+            if carriers and not logged_carrier_payload:
+                logger.info("Carrier payload sample: %s", carriers)
+                logged_carrier_payload = True
+
             segments = leg.get("segments", [])
             stopovers = []
             if stops > 0 and len(segments) > 1:
@@ -321,6 +361,13 @@ def process_flight_response(
                         }
                     )
 
+            carrier_name = (
+                normalize_carrier_name(carriers[0].get("name", "N/A"))
+                if carriers
+                else "N/A"
+            )
+            carrier_logo = carriers[0].get("logoUrl") if carriers else ""
+
             flight = {
                 "città": dest_info.get("city", city["name"]),
                 "paese": dest_info.get("country", city.get("country", "")),
@@ -333,15 +380,20 @@ def process_flight_response(
                 "durata_min": duration,
                 "scali": stops,
                 "stopovers": stopovers,
-                "compagnia": carriers[0].get("name", "N/A") if carriers else "N/A",
+                "compagnia": carrier_name,
+                "logo_url": carrier_logo,
             }
 
             key = (
                 f"{flight['codice_origine']}-{flight['codice_dest']}-"
-                f"{flight['partenza']}-{flight['prezzo']}"
+                f"{flight['partenza']}-{carrier_name}"
             )
-            if key not in voli_keys:
-                voli_keys.add(key)
+            if key in voli_keys:
+                existing_idx = voli_keys[key]
+                if flight["prezzo"] < voli_trovati[existing_idx]["prezzo"]:
+                    voli_trovati[existing_idx] = flight
+            else:
+                voli_keys[key] = len(voli_trovati)
                 voli_trovati.append(flight)
 
 
@@ -419,7 +471,7 @@ def search_everywhere_multi(
     cities = list(all_cities.values())
 
     voli_trovati = []
-    voli_keys = set()
+    voli_keys = {}
 
     for city in cities:
         for origin in origin_list:
@@ -516,7 +568,7 @@ def search_everywhere_multi(
     cities = list(all_cities.values())
 
     voli_trovati = []
-    voli_keys = set()
+    voli_keys = {}
 
     for city in cities:
         for origin in origin_list:
@@ -568,7 +620,7 @@ def search_specific_destinations(
     dest_codes = [d.skyId for d in dest_list]
 
     voli_trovati = []
-    voli_keys = set()
+    voli_keys = {}
 
     for origin in origin_list:
         for dest in dest_list:
@@ -604,7 +656,7 @@ def search_specific_destinations(
     dest_codes = [d.skyId for d in dest_list]
 
     voli_trovati = []
-    voli_keys = set()
+    voli_keys = {}
 
     for origin in origin_list:
         for dest in dest_list:
@@ -644,6 +696,10 @@ def sort_flights(flights, sort_key):
     return sorted(flights, key=lambda f: f.get("prezzo", 0))
 
 
+def sse_event(payload):
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -668,6 +724,352 @@ def api_airports():
             }
             for airport in results[:8]
         ]
+    )
+
+
+@app.route("/api/search/stream", methods=["POST"])
+def api_search_stream():
+    payload = request.get_json(silent=True) or {}
+
+    origin_items = normalize_selected_locations(payload.get("origins", []))
+    dest_items = normalize_selected_locations(payload.get("destinations", []))
+    origin_codes = dedupe_codes(origin_items)
+    dest_codes = dedupe_codes(dest_items)
+    search_everywhere = payload.get("search_everywhere", False) or (
+        "EVERYWHERE" in dest_codes or not dest_codes
+    )
+
+    if not origin_codes:
+        return jsonify({"error": "Seleziona almeno un aeroporto di partenza."}), 400
+
+    try:
+        depart_date = parse_date(payload.get("depart_date", ""))
+        max_price = float(payload.get("max_price", 0))
+        min_hour = int(payload.get("min_hour", 0))
+        max_hour = int(payload.get("max_hour", 24))
+        min_arrival_hour = int(payload.get("min_arrival_hour", 0))
+        max_arrival_hour = int(payload.get("max_arrival_hour", 24))
+    except (TypeError, ValueError):
+        return (
+            jsonify(
+                {
+                    "error": "Controlla i valori inseriti. Formato data: GG/MM/AAAA.",
+                }
+            ),
+            400,
+        )
+
+    direct_only = bool(payload.get("direct_only"))
+    same_day = bool(payload.get("same_day", True))
+    sort_key = payload.get("sort", "prezzo")
+
+    def generate():
+        scanner = build_scanner()
+
+        try:
+            origin_list = [airport_from_code(scanner, code) for code in origin_codes]
+        except GenericError as exc:
+            yield sse_event({"type": "error", "error": str(exc)})
+            return
+
+        yield sse_event(
+            {
+                "type": "progress",
+                "message": "Connessione a Skyscanner...",
+                "current": 0,
+                "total": 0,
+            }
+        )
+
+        nonlocal search_everywhere, dest_items, dest_codes
+
+        if not search_everywhere:
+            country_items = [
+                item for item in dest_items if item["entity_type"] == "COUNTRY"
+            ]
+            if country_items:
+                for idx, item in enumerate(country_items, start=1):
+                    title = item.get("title") or item.get("code") or "paese"
+                    yield sse_event(
+                        {
+                            "type": "progress",
+                            "message": f"Espando {title} in città",
+                            "current": idx,
+                            "total": len(country_items),
+                        }
+                    )
+
+                expanded = []
+                for item in country_items:
+                    expanded.extend(
+                        get_country_places(
+                            scanner, item["code"], item.get("title", "")
+                        )
+                    )
+
+                expanded_items = [
+                    {"code": place["skyCode"], "entity_type": place["type"]}
+                    for place in expanded
+                    if place.get("skyCode")
+                ]
+                dest_items = [
+                    item for item in dest_items if item["entity_type"] != "COUNTRY"
+                ] + expanded_items
+                dest_codes = dedupe_codes(dest_items)
+
+            if not dest_codes:
+                yield sse_event(
+                    {
+                        "type": "error",
+                        "error": "Nessuna destinazione valida trovata.",
+                    }
+                )
+                return
+
+        if search_everywhere:
+            origin_codes_str = [o.skyId for o in origin_list]
+            all_countries = {}
+
+            total_origins = len(origin_list)
+            for origin_idx, origin in enumerate(origin_list, start=1):
+                yield sse_event(
+                    {
+                        "type": "progress",
+                        "message": f"Cerco paesi da {origin.skyId}",
+                        "current": origin_idx,
+                        "total": total_origins,
+                    }
+                )
+
+                response = scanner.get_flight_prices(
+                    origin=origin,
+                    destination=SpecialTypes.EVERYWHERE,
+                    depart_date=depart_date,
+                )
+
+                for r in response.json.get("everywhereDestination", {}).get("results", []):
+                    content = r.get("content", {})
+                    location = content.get("location", {})
+                    price = content.get("flightQuotes", {}).get("cheapest", {}).get(
+                        "rawPrice", 999999
+                    )
+                    if location.get("name") and location.get("skyCode") and price and price <= max_price:
+                        sky_code = location["skyCode"]
+                        if sky_code not in all_countries:
+                            all_countries[sky_code] = {
+                                "name": location["name"],
+                                "skyCode": sky_code,
+                            }
+
+            countries = list(all_countries.values())
+            if countries:
+                yield sse_event(
+                    {
+                        "type": "progress",
+                        "message": f"Trovati {len(countries)} paesi in budget",
+                        "current": len(countries),
+                        "total": len(countries),
+                    }
+                )
+
+            all_cities = {}
+            first_origin = origin_list[0]
+            total_countries = len(countries)
+
+            for country_idx, country in enumerate(countries, start=1):
+                yield sse_event(
+                    {
+                        "type": "progress",
+                        "message": f"Cerco città in {country['name']}",
+                        "current": country_idx,
+                        "total": total_countries,
+                    }
+                )
+
+                country_airports = scanner.search_airports(country["skyCode"])
+                if not country_airports:
+                    continue
+                country_entity = next(
+                    (a for a in country_airports if a.skyId == country["skyCode"]),
+                    country_airports[0],
+                )
+
+                country_response = scanner.get_flight_prices(
+                    origin=first_origin,
+                    destination=country_entity,
+                    depart_date=depart_date,
+                )
+
+                for r in country_response.json.get("countryDestination", {}).get("results", []):
+                    content = r.get("content", {})
+                    location = content.get("location", {})
+                    city_price = content.get("flightQuotes", {}).get("cheapest", {}).get(
+                        "rawPrice", 999999
+                    )
+                    if location.get("name") and location.get("skyCode") and city_price and city_price <= max_price:
+                        sky_code = location["skyCode"]
+                        if sky_code not in all_cities:
+                            all_cities[sky_code] = {
+                                "name": location["name"],
+                                "skyCode": sky_code,
+                                "country": country["name"],
+                            }
+
+            cities = list(all_cities.values())
+            if cities:
+                yield sse_event(
+                    {
+                        "type": "progress",
+                        "message": f"Trovate {len(cities)} città in budget",
+                        "current": len(cities),
+                        "total": len(cities),
+                    }
+                )
+
+            voli_trovati = []
+            voli_keys = {}
+            total_searches = len(cities) * len(origin_list)
+            search_count = 0
+
+            for city in cities:
+                for origin in origin_list:
+                    search_count += 1
+                    country_name = city.get("country", "")
+                    detail = f" ({country_name})" if country_name else ""
+                    yield sse_event(
+                        {
+                            "type": "progress",
+                            "message": f"Guardo {origin.skyId} → {city['name']}{detail}",
+                            "current": search_count,
+                            "total": total_searches,
+                            "found": len(voli_trovati),
+                        }
+                    )
+
+                    city_airports = scanner.search_airports(city["skyCode"])
+                    if not city_airports:
+                        continue
+
+                    flight_response = scanner.get_flight_prices(
+                        origin=origin,
+                        destination=city_airports[0],
+                        depart_date=depart_date,
+                    )
+
+                    before_count = len(voli_trovati)
+                    process_flight_response(
+                        flight_response,
+                        origin,
+                        city,
+                        depart_date,
+                        max_price,
+                        min_hour,
+                        max_hour,
+                        min_arrival_hour,
+                        max_arrival_hour,
+                        direct_only,
+                        same_day,
+                        voli_trovati,
+                        voli_keys,
+                    )
+                    if len(voli_trovati) > before_count:
+                        yield sse_event(
+                            {
+                                "type": "results",
+                                "flights": voli_trovati[before_count:],
+                                "count": len(voli_trovati),
+                            }
+                        )
+
+            stats = {
+                "paesi": len(countries),
+                "città": len(cities),
+                "partenze": ", ".join(origin_codes_str),
+            }
+            flights = sort_flights(voli_trovati, sort_key)
+
+        else:
+            try:
+                dest_list = [airport_from_code(scanner, code) for code in dest_codes]
+            except GenericError as exc:
+                yield sse_event({"type": "error", "error": str(exc)})
+                return
+
+            origin_codes_str = [o.skyId for o in origin_list]
+            dest_codes_str = [d.skyId for d in dest_list]
+
+            voli_trovati = []
+            voli_keys = {}
+            total_searches = len(origin_list) * len(dest_list)
+            search_count = 0
+
+            for origin in origin_list:
+                for dest in dest_list:
+                    search_count += 1
+                    yield sse_event(
+                        {
+                            "type": "progress",
+                            "message": f"Guardo {origin.skyId} → {dest.title}",
+                            "current": search_count,
+                            "total": total_searches,
+                            "found": len(voli_trovati),
+                        }
+                    )
+
+                    flight_response = scanner.get_flight_prices(
+                        origin=origin, destination=dest, depart_date=depart_date
+                    )
+
+                    city_info = {"name": dest.title, "skyCode": dest.skyId, "country": ""}
+
+                    before_count = len(voli_trovati)
+                    process_flight_response(
+                        flight_response,
+                        origin,
+                        city_info,
+                        depart_date,
+                        max_price,
+                        min_hour,
+                        max_hour,
+                        min_arrival_hour,
+                        max_arrival_hour,
+                        direct_only,
+                        same_day,
+                        voli_trovati,
+                        voli_keys,
+                    )
+                    if len(voli_trovati) > before_count:
+                        yield sse_event(
+                            {
+                                "type": "results",
+                                "flights": voli_trovati[before_count:],
+                                "count": len(voli_trovati),
+                            }
+                        )
+
+            stats = {
+                "partenze": ", ".join(origin_codes_str),
+                "destinazioni": ", ".join(dest_codes_str),
+            }
+            flights = sort_flights(voli_trovati, sort_key)
+
+        yield sse_event(
+            {
+                "type": "complete",
+                "flights": flights,
+                "stats": stats,
+                "count": len(flights),
+                "search_everywhere": search_everywhere,
+            }
+        )
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 

@@ -1,4 +1,4 @@
-const API_SEARCH = "/api/search";
+const API_SEARCH_STREAM = "/api/search/stream";
 const API_AIRPORTS = "/api/airports";
 
 const createElement = (tag, className) => {
@@ -403,8 +403,16 @@ const renderFlights = (flights, container) => {
 
     const airline = createElement("div", "airline");
     const logo = createElement("div", "logo");
-    logo.style.background = getAirlineColor(flight.compagnia || "");
-    logo.textContent = getInitials(flight.compagnia || "NA");
+    if (flight.logo_url) {
+      const img = createElement("img");
+      img.src = flight.logo_url;
+      img.alt = flight.compagnia || "Logo compagnia";
+      img.loading = "lazy";
+      logo.appendChild(img);
+    } else {
+      logo.style.background = getAirlineColor(flight.compagnia || "");
+      logo.textContent = getInitials(flight.compagnia || "NA");
+    }
     airline.appendChild(logo);
     const airlineName = createElement("span");
     airlineName.textContent = flight.compagnia || "N/A";
@@ -414,7 +422,17 @@ const renderFlights = (flights, container) => {
     const dep = createElement("div", "time-block");
     dep.innerHTML = `<strong>${flight.partenza}</strong><span>${flight.codice_origine}</span>`;
     const duration = createElement("div", "time-block");
-    duration.innerHTML = `<div class="stops">${flight.durata}</div><div class="line"></div><div class="stops">${flight.scali === 0 ? "Diretto" : `${flight.scali} scalo`}</div>`;
+    const stopCount = Number(flight.scali || 0);
+    const stopLabel = stopCount === 0 ? "Diretto" : `${stopCount} scalo`;
+    let stopDots = "";
+    if (stopCount > 0) {
+      const dots = Array.from({ length: stopCount }, (_, index) => {
+        const position = ((index + 1) / (stopCount + 1)) * 100;
+        return `<span class="stop-dot" style="left: ${position}%"></span>`;
+      });
+      stopDots = dots.join("");
+    }
+    duration.innerHTML = `<div class="stops">${flight.durata}</div><div class="line">${stopDots}</div><div class="stops">${stopLabel}</div>`;
     const arr = createElement("div", "time-block");
     arr.innerHTML = `<strong>${flight.arrivo}</strong><span>${flight.codice_dest}</span>`;
     times.append(dep, duration, arr);
@@ -439,63 +457,12 @@ const renderFlights = (flights, container) => {
   });
 };
 
-const describeSelection = (items, fallback) => {
-  if (!items.length) return fallback;
-  return items.map((item) => item.title || item.code).join(", ");
-};
-
-const buildSearchMessages = (origins, destinations) => {
-  const hasEverywhere = destinations.some((item) => item.code === "EVERYWHERE");
-  const countries = destinations.filter((item) => item.entityType === "COUNTRY");
-  const airports = destinations.filter(
-    (item) => item.entityType === "AIRPORT" || item.entityType === "CITY"
-  );
-  const originLabel = describeSelection(origins, "partenze selezionate");
-  const destinationLabel = hasEverywhere
-    ? "tutto il mondo"
-    : describeSelection(destinations, "destinazioni selezionate");
-  const countryLabel = countries.length
-    ? describeSelection(countries, "paese selezionato")
-    : "";
-  const airportLabel = airports.length
-    ? describeSelection(airports, "destinazioni selezionate")
-    : "";
-
-  const messages = [
-    `Sto cercando voli da ${originLabel} verso ${destinationLabel}...`,
-  ];
-
-  if (countries.length) {
-    messages.push(
-      `Sto espandendo il paese ${countryLabel} in città e aeroporti...`
-    );
+const formatProgressMessage = (payload) => {
+  const base = payload.message || "Ricerca in corso...";
+  if (payload.current && payload.total) {
+    return `${base} (${payload.current}/${payload.total})`;
   }
-
-  if (airports.length && !hasEverywhere) {
-    messages.push(`Sto interrogando ${airportLabel}...`);
-  } else if (!hasEverywhere) {
-    messages.push("Sto interrogando le destinazioni selezionate...");
-  }
-
-  messages.push("Quasi fatto, sto ordinando i risultati...");
-  return messages;
-};
-
-const startStatusRotation = (statusTitle, statusSubtitle, messages) => {
-  let index = 0;
-  const startedAt = Date.now();
-
-  statusTitle.textContent = messages[index] || "Ricerca in corso...";
-  statusSubtitle.textContent = "In corso da 0s";
-
-  const intervalId = setInterval(() => {
-    index = (index + 1) % messages.length;
-    const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
-    statusTitle.textContent = messages[index];
-    statusSubtitle.textContent = `In corso da ${elapsedSeconds}s`;
-  }, 1800);
-
-  return () => clearInterval(intervalId);
+  return base;
 };
 
 const init = () => {
@@ -568,7 +535,9 @@ const init = () => {
   setDefaultDate();
 
   let lastFlights = [];
-  let stopStatusRotation = null;
+  let stopTimer = null;
+  let lastFound = null;
+  let startedAt = null;
 
   const getSortValue = () => {
     const selected = document.querySelector("input[name='sort']:checked");
@@ -608,15 +577,19 @@ const init = () => {
     }
 
     searchBtn.disabled = true;
-    if (stopStatusRotation) {
-      stopStatusRotation();
+    if (stopTimer) {
+      stopTimer();
     }
-    const statusMessages = buildSearchMessages(origins, destinations);
-    stopStatusRotation = startStatusRotation(
-      statusTitle,
-      statusSubtitle,
-      statusMessages
-    );
+    startedAt = Date.now();
+    lastFound = null;
+    const updateSubtitle = () => {
+      const elapsedSeconds = Math.floor((Date.now() - startedAt) / 1000);
+      const foundText = lastFound !== null ? ` • ${lastFound} trovati` : "";
+      statusSubtitle.textContent = `In corso da ${elapsedSeconds}s${foundText}`;
+    };
+    updateSubtitle();
+    const intervalId = setInterval(updateSubtitle, 1000);
+    stopTimer = () => clearInterval(intervalId);
 
     const formattedDate = departDateInput.value
       ? departDateInput.value.split("-").reverse().join("/")
@@ -641,42 +614,116 @@ const init = () => {
     };
 
     try {
-      const response = await fetch(API_SEARCH, {
+      const response = await fetch(API_SEARCH_STREAM, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
 
-      const data = await response.json();
-
       if (!response.ok) {
+        const data = await response.json();
         statusTitle.textContent = data.error || "Errore durante la ricerca.";
         statusSubtitle.textContent = "";
-        searchBtn.disabled = false;
         return;
       }
 
-      if (stopStatusRotation) {
-        stopStatusRotation();
-        stopStatusRotation = null;
+      if (!response.body) {
+        statusTitle.textContent = "Impossibile leggere lo stream della ricerca.";
+        statusSubtitle.textContent = "";
+        return;
       }
-      statusTitle.textContent = `Trovati ${data.count} voli`;
-      statusSubtitle.textContent = data.search_everywhere
-        ? "Risultati ovunque"
-        : "Risultati su destinazioni selezionate";
-      statsEl.textContent = formatStats(data.stats);
 
-      lastFlights = data.flights || [];
-      const sorted = sortFlights(lastFlights, getSortValue());
-      renderFlights(sorted, resultsEl);
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let completed = false;
+
+      const handleEvent = (payload) => {
+        if (payload.type === "progress") {
+          statusTitle.textContent = formatProgressMessage(payload);
+          if (payload.found !== undefined) {
+            lastFound = payload.found;
+          }
+          updateSubtitle();
+          return;
+        }
+
+        if (payload.type === "results") {
+          const newFlights = payload.flights || [];
+          if (newFlights.length) {
+            lastFlights = lastFlights.concat(newFlights);
+            const sorted = sortFlights(lastFlights, getSortValue());
+            renderFlights(sorted, resultsEl);
+          }
+          if (payload.count !== undefined) {
+            lastFound = payload.count;
+            updateSubtitle();
+          }
+          return;
+        }
+
+        if (payload.type === "error") {
+          statusTitle.textContent = payload.error || "Errore durante la ricerca.";
+          statusSubtitle.textContent = "";
+          completed = true;
+          return;
+        }
+
+        if (payload.type === "complete") {
+          completed = true;
+          statusTitle.textContent = `Trovati ${payload.count} voli`;
+          statusSubtitle.textContent = payload.search_everywhere
+            ? "Risultati ovunque"
+            : "Risultati su destinazioni selezionate";
+          statsEl.textContent = formatStats(payload.stats);
+          lastFlights = payload.flights || [];
+          const sorted = sortFlights(lastFlights, getSortValue());
+          renderFlights(sorted, resultsEl);
+        }
+      };
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() || "";
+        parts.forEach((part) => {
+          const line = part
+            .split("\n")
+            .find((entry) => entry.startsWith("data:"));
+          if (!line) return;
+          const jsonStr = line.replace(/^data:\s*/, "");
+          try {
+            const payload = JSON.parse(jsonStr);
+            handleEvent(payload);
+          } catch (error) {
+            // ignore malformed chunks
+          }
+        });
+      }
+
+      if (!completed && buffer.trim()) {
+        const line = buffer
+          .split("\n")
+          .find((entry) => entry.startsWith("data:"));
+        if (line) {
+          const jsonStr = line.replace(/^data:\s*/, "");
+          try {
+            handleEvent(JSON.parse(jsonStr));
+          } catch (error) {
+            // ignore
+          }
+        }
+      }
     } catch (error) {
       statusTitle.textContent = "Errore durante la ricerca.";
       statusSubtitle.textContent = "";
     } finally {
       searchBtn.disabled = false;
-      if (stopStatusRotation) {
-        stopStatusRotation();
-        stopStatusRotation = null;
+      if (stopTimer) {
+        stopTimer();
+        stopTimer = null;
       }
     }
   });

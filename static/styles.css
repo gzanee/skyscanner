@@ -292,13 +292,22 @@ body {
 }
 
 .logo {
-  width: 48px;
-  height: 48px;
+  width: 56px;
+  height: 56px;
   border-radius: 14px;
   display: grid;
   place-items: center;
   color: #fff;
   font-weight: 600;
+  overflow: hidden;
+  background: transparent;
+}
+
+.logo img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  padding: 4px;
 }
 
 .times {
@@ -310,19 +319,26 @@ body {
 
 .time-block {
   text-align: center;
+  padding: 6px 0;
+}
+
+.time-block:nth-child(2) {
+  flex: 1;
 }
 
 .time-block strong {
   display: block;
   font-size: 18px;
+  margin-bottom: 4px;
 }
 
 .line {
   flex: 1;
-  height: 2px;
+  height: 4px;
   background: var(--border);
   position: relative;
-  margin: 0 12px;
+  margin: 6px 16px;
+  border-radius: 999px;
 }
 
 .line::before,
@@ -330,8 +346,8 @@ body {
   content: "";
   position: absolute;
   top: 50%;
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
   background: var(--primary);
   border-radius: 50%;
   transform: translateY(-50%);
@@ -343,6 +359,16 @@ body {
 
 .line::after {
   right: -4px;
+}
+
+.stop-dot {
+  position: absolute;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  background: var(--warning);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
 }
 
 .stops {
@@ -380,10 +406,24 @@ body {
   display: flex;
   gap: 8px;
   align-items: center;
+  position: relative;
+  padding-left: 12px;
+}
+
+.stopovers span::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  background: var(--warning);
+  border-radius: 50%;
+  transform: translateY(-50%);
 }
 
 .stopovers .icon {
-  color: var(--warning);
+  display: none;
 }
 
 @media (max-width: 1024px) {
